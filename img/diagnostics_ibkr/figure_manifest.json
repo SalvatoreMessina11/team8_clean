@@ -8,5 +8,7 @@
   "out_dir": "C:\\Users\\salvm\\Desktop\\GitHub\\team8_clean\\img\\diagnostics_ibkr",
   "rate_curve_model": "Nelson-Siegel-Svensson",
   "rate_fit_target": "continuous_rate",
-  "official_min_dte": 75
+  "official_min_dte": 75,
+  "iv_colormap": "viridis",
+  "cc_nodes_share_surface_colormap": true
 }

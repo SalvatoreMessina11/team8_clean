@@ -1,40 +1,30 @@
-"""Generate the IBKR figures that are present in the old paper but
-not yet reproduced in the IBKR LaTeX version, excluding OOS figures.
+"""Generate non-OOS IBKR diagnostic figures for the Team 8 GLD project.
 
-Target figures (saved under img/diagnostics_ibkr/):
-    usd_treasury_curve.png
-    sampling_comparison.png
-    volatility_surface_3d.png
-    gld_return_normality.png
-    terminal_return_percentiles.png
-    paths_black_scholes_5.png
-    paths_heston_5.png
-    paths_bates_5.png
-    paths_bates_hawkes_5.png
-    gold_path_stats_by_model.png
-    volatility_state_paths.png
-    hawkes_jump_paths.png
-    bates_poisson_jump_paths.png
+This replacement is designed for the current repository structure:
 
-Inputs expected from the Team 8 repository:
-    data/processed/usd_treasury_history.csv
-    data/processed/gld_daily_history.csv
     data/processed/full_surfaces/GLD_<DATE>_eligible_full_surface.csv
-    outputs/sampling/<DATE>/sample_CC_64.csv
-    outputs/calibrations/CC/<DATE>/
-        black_scholes.json
-        heston.json
-        bates.json
-        full_bates_hawkes.json
+    outputs/sampling/<DATE>/sample_<STRATEGY>_64.csv
+    outputs/calibrations/<STRATEGY>/<DATE>/
 
-Example:
-    python src/make_missing_ibkr_figures.py --date 2026-09-02
+Methodological conventions preserved:
+- no-look-ahead Nelson-Siegel-Svensson Treasury curve;
+- official calibration domain DTE >= 75 days by default;
+- fixed CC = Chebyshev T x Chebyshev K calibration geometry;
+- interpolation is used for visualization only, never to manufacture
+  calibration observations.
+
+Publication style update:
+- the IV surface uses the ``viridis`` palette (dark purple -> green -> yellow);
+- Chebyshev/CC nodes use the SAME IV palette and normalization;
+- PNGs are rendered to memory before being written, avoiding a Windows/Pillow
+  ``OSError: [Errno 22] Invalid argument`` seen on some systems.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 
@@ -42,15 +32,30 @@ import numpy as np
 import pandas as pd
 from matplotlib import pyplot as plt
 from matplotlib.gridspec import GridSpec
-from matplotlib.ticker import MaxNLocator
+from matplotlib.ticker import FuncFormatter
 from scipy.interpolate import LinearNDInterpolator
 from scipy.stats import gaussian_kde, jarque_bera, norm, normaltest, probplot, shapiro
 
-from rates import load_rate_history, curve_without_lookahead, fit_nss_curve, nss_rates
+from rates import curve_without_lookahead, fit_nss_curve, load_rate_history, nss_rates
+
+
+IV_CMAP = "viridis"
 
 
 def ensure_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
+
+
+def save_png(fig, out: Path, *, dpi: int = 220, bbox_inches: str = "tight") -> None:
+    """Save a Matplotlib figure robustly on Windows via an in-memory buffer."""
+    out = Path(str(out).strip().strip('"')).expanduser()
+    if not out.is_absolute():
+        out = (Path.cwd() / out).resolve()
+    out.parent.mkdir(parents=True, exist_ok=True)
+
+    buffer = BytesIO()
+    fig.savefig(buffer, format="png", dpi=int(dpi), bbox_inches=bbox_inches)
+    out.write_bytes(buffer.getvalue())
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -58,147 +63,54 @@ def load_json(path: Path) -> dict[str, Any]:
 
 
 def safe_close_column(df: pd.DataFrame) -> str:
-    candidates = ["close", "Close", "adj_close", "Adj Close", "price", "Price"]
-    for c in candidates:
+    for c in ["close", "Close", "adj_close", "Adj Close", "price", "Price"]:
         if c in df.columns:
             return c
     raise ValueError(f"Could not infer close column from {list(df.columns)}")
 
 
 def safe_date_column(df: pd.DataFrame) -> str:
-    candidates = ["date", "Date", "timestamp", "Timestamp"]
-    for c in candidates:
+    for c in ["date", "Date", "timestamp", "Timestamp"]:
         if c in df.columns:
             return c
     raise ValueError(f"Could not infer date column from {list(df.columns)}")
 
 
 def load_surface(path: Path) -> pd.DataFrame:
-    if path.suffix.lower() == ".parquet":
-        df = pd.read_parquet(path)
-    else:
-        df = pd.read_csv(path)
+    if not path.exists():
+        raise FileNotFoundError(path)
+
+    df = pd.read_parquet(path) if path.suffix.lower() == ".parquet" else pd.read_csv(path)
 
     for c in ["T", "K", "implied_vol"]:
         if c not in df.columns:
             raise ValueError(f"{path} missing column {c}")
         df[c] = pd.to_numeric(df[c], errors="coerce")
 
-    for c in ["price", "rate", "vega", "spot"]:
+    for c in ["price", "rate", "vega", "spot", "dte"]:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
 
     df = df.dropna(subset=["T", "K", "implied_vol"]).copy()
     df = df.loc[(df["T"] > 0) & (df["K"] > 0) & (df["implied_vol"] > 0)].copy()
-    df = df.sort_values(["T", "K"]).reset_index(drop=True)
-    return df
-
-
-def load_rates_long(path: Path) -> pd.DataFrame:
-    """Robust loader for Treasury history.
-
-    Supports either:
-    - long format: date, tenor_years, rate
-    - wide format: date + tenor columns
-    """
-    df = pd.read_csv(path)
-    date_col = safe_date_column(df)
-    df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
-    df = df.dropna(subset=[date_col]).copy()
-
-    cols_lower = {c.lower(): c for c in df.columns}
-    if {"tenor_years", "rate"}.issubset(cols_lower):
-        out = df[[cols_lower["tenor_years"], cols_lower["rate"], date_col]].copy()
-        out.columns = ["tenor_years", "rate", "date"]
-        out["tenor_years"] = pd.to_numeric(out["tenor_years"], errors="coerce")
-        out["rate"] = pd.to_numeric(out["rate"], errors="coerce")
-        return out.dropna(subset=["tenor_years", "rate"])
-
-    wide = df.copy()
-    non_tenor = {date_col, "date"}
-    tenor_rows = []
-    for c in wide.columns:
-        if c in non_tenor:
-            continue
-        s = pd.to_numeric(wide[c], errors="coerce")
-        if s.notna().sum() == 0:
-            continue
-        tenor = parse_tenor_label_to_years(c)
-        if tenor is None:
-            continue
-        tmp = pd.DataFrame(
-            {
-                "date": wide[date_col],
-                "tenor_years": tenor,
-                "rate": s,
-            }
-        )
-        tenor_rows.append(tmp)
-
-    if not tenor_rows:
-        raise ValueError(f"Could not infer tenor columns from {path}")
-
-    out = pd.concat(tenor_rows, ignore_index=True)
-    out = out.dropna(subset=["date", "tenor_years", "rate"]).copy()
-    return out
-
-
-def parse_tenor_label_to_years(label: str) -> float | None:
-    txt = label.strip().lower().replace("_", " ")
-    mapping = {
-        "1 mo": 1/12,
-        "2 mo": 2/12,
-        "3 mo": 3/12,
-        "4 mo": 4/12,
-        "6 mo": 6/12,
-        "1 yr": 1.0,
-        "2 yr": 2.0,
-        "3 yr": 3.0,
-        "5 yr": 5.0,
-        "7 yr": 7.0,
-        "10 yr": 10.0,
-        "20 yr": 20.0,
-        "30 yr": 30.0,
-        "1m": 1/12,
-        "2m": 2/12,
-        "3m": 3/12,
-        "4m": 4/12,
-        "6m": 6/12,
-        "1y": 1.0,
-        "2y": 2.0,
-        "3y": 3.0,
-        "5y": 5.0,
-        "7y": 7.0,
-        "10y": 10.0,
-        "20y": 20.0,
-        "30y": 30.0,
-    }
-    if txt in mapping:
-        return mapping[txt]
-    return None
-
-
-def nearest_date_at_or_before(series: pd.Series, date: pd.Timestamp) -> pd.Timestamp:
-    s = pd.to_datetime(series, errors="coerce").dropna().sort_values().unique()
-    s = pd.to_datetime(pd.Series(s))
-    s = s[s <= date]
-    if len(s) == 0:
-        raise ValueError(f"No date in series <= {date.date()}")
-    return pd.Timestamp(s.iloc[-1])
+    return df.sort_values(["T", "K"]).reset_index(drop=True)
 
 
 def read_model_params(calib_dir: Path) -> dict[str, dict[str, Any]]:
-    out = {}
     files = {
         "black_scholes": calib_dir / "black_scholes.json",
         "heston": calib_dir / "heston.json",
         "bates": calib_dir / "bates.json",
         "bates_hawkes": calib_dir / "full_bates_hawkes.json",
     }
-    for k, p in files.items():
-        if not p.exists():
-            raise FileNotFoundError(f"Missing calibration file: {p}")
-        out[k] = load_json(p)
+    out: dict[str, dict[str, Any]] = {}
+    for name, path in files.items():
+        if not path.exists():
+            raise FileNotFoundError(f"Missing calibration file: {path}")
+        payload = load_json(path)
+        if not payload.get("success", False):
+            raise RuntimeError(f"Calibration result is not successful: {path}")
+        out[name] = payload
     return out
 
 
@@ -209,69 +121,48 @@ def get_param(payload: dict[str, Any], *names: str, default: float | None = None
             return float(params[name])
     if default is not None:
         return float(default)
-    raise KeyError(f"None of {names} found in parameters keys {list(params.keys())}")
+    raise KeyError(f"None of {names} found in parameter keys {list(params.keys())}")
+
+
+def _pct_colorbar(cbar) -> None:
+    cbar.ax.yaxis.set_major_formatter(FuncFormatter(lambda x, pos: f"{100.0 * x:.0f}"))
+    cbar.set_label("Implied volatility (%)")
 
 
 def plot_treasury_curve(rates_path: Path, asof: pd.Timestamp, out: Path) -> None:
-    """Plot observed Treasury tenors and the no-look-ahead NSS curve."""
     history = load_rate_history(rates_path)
     curve, curve_date = curve_without_lookahead(history, asof)
     fit = fit_nss_curve(curve)
 
-    observed_T = curve["maturity_years"].to_numpy(dtype=float)
+    observed_t = curve["maturity_years"].to_numpy(dtype=float)
     observed_r = curve["continuous_rate"].to_numpy(dtype=float)
-
-    t_min = max(1.0 / 365.25, float(observed_T.min()))
-    t_max = float(observed_T.max())
-    dense_T = np.linspace(t_min, t_max, 600)
-    dense_r = nss_rates(dense_T, fit)
+    dense_t = np.linspace(max(1.0 / 365.25, observed_t.min()), observed_t.max(), 600)
+    dense_r = nss_rates(dense_t, fit)
 
     fig, ax = plt.subplots(figsize=(8.8, 5.6))
-
-    ax.scatter(
-        observed_T,
-        100.0 * observed_r,
-        s=45,
-        label="Observed Treasury tenors",
-        zorder=3,
-    )
-    ax.plot(
-        dense_T,
-        100.0 * dense_r,
-        linewidth=2.0,
-        label="Nelson-Siegel-Svensson fit",
-    )
-
-    ax.set_title(
-        f"USD Treasury NSS curve used for option discounting ({curve_date.date()})"
-    )
+    ax.scatter(observed_t, 100.0 * observed_r, s=45, label="Observed Treasury tenors", zorder=3)
+    ax.plot(dense_t, 100.0 * dense_r, linewidth=2.0, label="Nelson-Siegel-Svensson fit")
+    ax.set_title(f"USD Treasury NSS curve used for option discounting ({curve_date.date()})")
     ax.set_xlabel("Maturity (years)")
     ax.set_ylabel("Continuously compounded rate (%)")
     ax.grid(True, alpha=0.3)
     ax.legend(loc="best")
-
-    diagnostics = (
-        f"NSS RMSE = {fit.rmse_bps:.3f} bp\\n"
-        f"$\\tau_1$ = {fit.tau1:.3f} y\\n"
-        f"$\\tau_2$ = {fit.tau2:.3f} y"
-    )
     ax.text(
         0.98,
         0.04,
-        diagnostics,
+        f"NSS RMSE = {fit.rmse_bps:.3f} bp\n$\\tau_1$ = {fit.tau1:.3f} y\n$\\tau_2$ = {fit.tau2:.3f} y",
         transform=ax.transAxes,
         ha="right",
         va="bottom",
         bbox=dict(boxstyle="round", alpha=0.15),
     )
-
     fig.tight_layout()
-    fig.savefig(out, dpi=220, bbox_inches="tight")
+    save_png(fig, out)
     plt.close(fig)
 
 
 def plot_sampling_comparison(full_surface: pd.DataFrame, sample_cc: pd.DataFrame, out: Path) -> None:
-    """Compare the DTE-filtered eligible universe with the fixed CC sample."""
+    """Plot the eligible universe and the CC nodes with one common IV palette."""
     vmin = float(full_surface["implied_vol"].min())
     vmax = float(full_surface["implied_vol"].max())
 
@@ -281,61 +172,53 @@ def plot_sampling_comparison(full_surface: pd.DataFrame, sample_cc: pd.DataFrame
         full_surface["T"],
         full_surface["K"],
         c=full_surface["implied_vol"],
-        cmap="cividis",
+        cmap=IV_CMAP,
         vmin=vmin,
         vmax=vmax,
-        s=14,
+        s=16,
     )
     axes[0].set_title("Eligible surface (DTE >= 75 days)")
     axes[0].set_xlabel("Maturity T (years)")
     axes[0].set_ylabel("Strike K")
-    axes[0].grid(True, alpha=0.25)
-    fig.colorbar(sc0, ax=axes[0], label="Implied volatility")
+    axes[0].grid(True, alpha=0.22)
+    _pct_colorbar(fig.colorbar(sc0, ax=axes[0]))
 
     axes[1].scatter(
         full_surface["T"],
         full_surface["K"],
-        s=10,
-        alpha=0.18,
-        color="0.65",
+        s=11,
+        alpha=0.15,
+        color="0.70",
         label="Eligible market points",
     )
     sc1 = axes[1].scatter(
         sample_cc["T"],
         sample_cc["K"],
         c=sample_cc["implied_vol"],
-        cmap="cividis",
+        cmap=IV_CMAP,
         vmin=vmin,
         vmax=vmax,
-        s=58,
+        s=65,
         edgecolors="black",
-        linewidths=0.5,
+        linewidths=0.55,
         label="CC 64-node sample",
+        zorder=3,
     )
-    axes[1].set_title("Fixed Chebyshev-Chebyshev calibration nodes")
+    axes[1].set_title("Chebyshev-Chebyshev calibration nodes")
     axes[1].set_xlabel("Maturity T (years)")
     axes[1].set_ylabel("Strike K")
-    axes[1].grid(True, alpha=0.25)
+    axes[1].grid(True, alpha=0.22)
     axes[1].legend(loc="best")
-    fig.colorbar(sc1, ax=axes[1], label="Implied volatility")
+    _pct_colorbar(fig.colorbar(sc1, ax=axes[1]))
 
     fig.suptitle("GLD eligible IV surface and 64-point CC calibration sample")
     fig.tight_layout()
-    fig.savefig(out, dpi=220, bbox_inches="tight")
+    save_png(fig, out)
     plt.close(fig)
 
 
 def plot_surface_3d(full_surface: pd.DataFrame, sample_cc: pd.DataFrame, out: Path) -> None:
-    """Plot a stable visual interpolation of the observed IV surface.
-
-    The interpolation is performed in normalized (T, K) coordinates to avoid
-    geometric distortion from the very different numerical scales of maturity
-    and strike. LinearNDInterpolator is used only for visualization and does
-    not extrapolate outside the convex hull. Calibration still uses actual
-    market observations only.
-    """
-    from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
-
+    """Stable IV visualization using normalized coordinates and common viridis colors."""
     frame = full_surface[["T", "K", "implied_vol"]].dropna().copy()
     frame = frame.drop_duplicates(["T", "K"], keep="last")
 
@@ -348,74 +231,69 @@ def plot_surface_3d(full_surface: pd.DataFrame, sample_cc: pd.DataFrame, out: Pa
     t_scale = max(t_max - t_min, 1e-12)
     k_scale = max(k_max - k_min, 1e-12)
 
-    points_norm = np.column_stack(
-        [
-            (t - t_min) / t_scale,
-            (k - k_min) / k_scale,
-        ]
-    )
+    points_norm = np.column_stack(((t - t_min) / t_scale, (k - k_min) / k_scale))
     interp = LinearNDInterpolator(points_norm, iv, fill_value=np.nan)
 
-    # A moderate grid is sufficient for a publication figure and avoids the
-    # blade-like triangles produced by a direct trisurf on the irregular cloud.
     t_grid = np.linspace(t_min, t_max, 90)
     k_grid = np.linspace(k_min, k_max, 120)
-    TT, KK = np.meshgrid(t_grid, k_grid, indexing="ij")
+    tt, kk = np.meshgrid(t_grid, k_grid, indexing="ij")
     query_norm = np.column_stack(
-        [
-            ((TT.ravel() - t_min) / t_scale),
-            ((KK.ravel() - k_min) / k_scale),
-        ]
+        ((tt.ravel() - t_min) / t_scale, (kk.ravel() - k_min) / k_scale)
     )
-    ZZ = np.asarray(interp(query_norm), dtype=float).reshape(TT.shape)
-    ZZ = np.ma.masked_invalid(ZZ)
+    zz = np.asarray(interp(query_norm), dtype=float).reshape(tt.shape)
+    zz = np.ma.masked_invalid(zz)
 
-    finite_iv = np.asarray(ZZ.compressed(), dtype=float)
+    finite_iv = np.asarray(zz.compressed(), dtype=float)
     if finite_iv.size == 0:
         raise RuntimeError("Linear IV interpolation produced no finite grid values.")
 
-    vmin = float(finite_iv.min())
-    vmax = float(finite_iv.max())
+    # Use the market-surface range for BOTH the surface and Chebyshev nodes.
+    vmin = float(full_surface["implied_vol"].min())
+    vmax = float(full_surface["implied_vol"].max())
 
     fig = plt.figure(figsize=(10.5, 7.2))
     ax = fig.add_subplot(111, projection="3d")
     surf = ax.plot_surface(
-        KK,
-        TT,
-        ZZ,
-        cmap="cividis",
+        kk,
+        tt,
+        zz,
+        cmap=IV_CMAP,
         vmin=vmin,
         vmax=vmax,
         linewidth=0,
         antialiased=True,
-        alpha=0.92,
+        alpha=0.94,
         rcount=90,
         ccount=120,
     )
+
+    # CC / Chebyshev nodes: same palette and same normalization as the surface.
     ax.scatter(
         sample_cc["K"],
         sample_cc["T"],
         sample_cc["implied_vol"],
-        s=30,
-        color="black",
+        c=sample_cc["implied_vol"],
+        cmap=IV_CMAP,
+        vmin=vmin,
+        vmax=vmax,
+        s=42,
+        edgecolors="black",
+        linewidths=0.65,
         depthshade=False,
         label="CC nodes",
+        zorder=5,
     )
+
     ax.set_xlabel("Strike K")
     ax.set_ylabel("Maturity T (years)")
     ax.set_zlabel("Implied volatility")
     ax.set_title("GLD implied-volatility surface with selected CC nodes")
     ax.view_init(elev=27, azim=-58)
     ax.legend(loc="upper right")
-    fig.colorbar(
-        surf,
-        ax=ax,
-        shrink=0.62,
-        pad=0.10,
-        label="Implied volatility",
-    )
+    cbar = fig.colorbar(surf, ax=ax, shrink=0.62, pad=0.10)
+    _pct_colorbar(cbar)
     fig.tight_layout()
-    fig.savefig(out, dpi=220, bbox_inches="tight")
+    save_png(fig, out)
     plt.close(fig)
 
 
@@ -427,17 +305,12 @@ def plot_return_normality(gld_path: Path, out: Path) -> dict[str, float]:
     df[close_col] = pd.to_numeric(df[close_col], errors="coerce")
     df = df.dropna(subset=[date_col, close_col]).sort_values(date_col).copy()
 
-    ret = 100.0 * np.log(df[close_col] / df[close_col].shift(1))
-    ret = pd.Series(ret).dropna()
-    mu = float(ret.mean())
-    sd = float(ret.std(ddof=1))
-
-    # Tests
-    sh_stat, sh_p = shapiro(ret.to_numpy()) if len(ret) <= 5000 else (np.nan, np.nan)
+    ret = (100.0 * np.log(df[close_col] / df[close_col].shift(1))).dropna()
+    mu, sd = float(ret.mean()), float(ret.std(ddof=1))
+    _, sh_p = shapiro(ret.to_numpy()) if len(ret) <= 5000 else (np.nan, np.nan)
     jb = jarque_bera(ret.to_numpy())
-    dag_stat, dag_p = normaltest(ret.to_numpy())
+    _, dag_p = normaltest(ret.to_numpy())
 
-    # Plot
     fig = plt.figure(figsize=(12.5, 5.8))
     gs = GridSpec(1, 2, figure=fig)
 
@@ -452,18 +325,18 @@ def plot_return_normality(gld_path: Path, out: Path) -> dict[str, float]:
     ax0.set_ylabel("Density")
     ax0.legend(loc="best")
     ax0.grid(True, alpha=0.25)
-
-    txt = (
-        f"Shapiro-Wilk p = {sh_p:.3g}\n"
-        f"Jarque-Bera p = {jb.pvalue:.3g}\n"
-        f"D'Agostino K² p = {dag_p:.3g}\n"
-        f"n = {len(ret)}"
+    ax0.text(
+        0.97,
+        0.97,
+        f"Shapiro-Wilk p = {sh_p:.3g}\nJarque-Bera p = {jb.pvalue:.3g}\nD'Agostino K² p = {dag_p:.3g}\nn = {len(ret)}",
+        transform=ax0.transAxes,
+        ha="right",
+        va="top",
+        bbox=dict(boxstyle="round", alpha=0.15),
     )
-    ax0.text(0.97, 0.97, txt, transform=ax0.transAxes, ha="right", va="top",
-             bbox=dict(boxstyle="round", alpha=0.15))
 
     ax1 = fig.add_subplot(gs[0, 1])
-    (osm, osr), (slope, intercept, r) = probplot(ret.to_numpy(), dist="norm")
+    (osm, osr), (slope, intercept, _) = probplot(ret.to_numpy(), dist="norm")
     ax1.scatter(osm, osr, s=16)
     qline = np.array([np.min(osm), np.max(osm)])
     ax1.plot(qline, slope * qline + intercept)
@@ -473,7 +346,7 @@ def plot_return_normality(gld_path: Path, out: Path) -> dict[str, float]:
     ax1.grid(True, alpha=0.25)
 
     fig.tight_layout()
-    fig.savefig(out, dpi=220, bbox_inches="tight")
+    save_png(fig, out)
     plt.close(fig)
 
     return {
@@ -508,19 +381,14 @@ def simulate_heston(spot, v0, kappa, theta, xi, rho, rate, years, n_steps, n_pat
     dt = years / n_steps
     s = np.empty((n_steps + 1, n_paths), dtype=float)
     v = np.empty((n_steps + 1, n_paths), dtype=float)
-    s[0] = spot
-    v[0] = max(v0, 1e-8)
+    s[0], v[0] = spot, max(v0, 1e-8)
 
     for t in range(n_steps):
-        z1 = rng.standard_normal(n_paths)
-        z2 = rng.standard_normal(n_paths)
-        zv = z1
+        z1, z2 = rng.standard_normal(n_paths), rng.standard_normal(n_paths)
         zs = rho * z1 + np.sqrt(max(1.0 - rho**2, 0.0)) * z2
-
-        v[t + 1] = _vector_full_trunc_cir(v[t], kappa, theta, xi, dt, zv)
+        v[t + 1] = _vector_full_trunc_cir(v[t], kappa, theta, xi, dt, z1)
         vt = np.maximum(v[t], 0.0)
         s[t + 1] = s[t] * np.exp((rate - 0.5 * vt) * dt + np.sqrt(vt * dt) * zs)
-
     return {"S": s, "V": v}
 
 
@@ -530,69 +398,45 @@ def simulate_bates(spot, v0, kappa, theta, xi, rho, lambd, mu_j, sigma_j, rate, 
     s = np.empty((n_steps + 1, n_paths), dtype=float)
     v = np.empty((n_steps + 1, n_paths), dtype=float)
     n_cum = np.empty((n_steps + 1, n_paths), dtype=float)
-    lam_path = np.empty((n_steps + 1, n_paths), dtype=float)
-
-    s[0] = spot
-    v[0] = max(v0, 1e-8)
-    n_cum[0] = 0.0
-    lam_path[:] = lambd
-
-    # Risk-neutral compensator for multiplicative lognormal jumps
+    lam_path = np.full((n_steps + 1, n_paths), float(lambd), dtype=float)
+    s[0], v[0], n_cum[0] = spot, max(v0, 1e-8), 0.0
     k_jump = np.exp(mu_j + 0.5 * sigma_j**2) - 1.0
 
     for t in range(n_steps):
-        z1 = rng.standard_normal(n_paths)
-        z2 = rng.standard_normal(n_paths)
-        zv = z1
+        z1, z2 = rng.standard_normal(n_paths), rng.standard_normal(n_paths)
         zs = rho * z1 + np.sqrt(max(1.0 - rho**2, 0.0)) * z2
-
-        v[t + 1] = _vector_full_trunc_cir(v[t], kappa, theta, xi, dt, zv)
+        v[t + 1] = _vector_full_trunc_cir(v[t], kappa, theta, xi, dt, z1)
         vt = np.maximum(v[t], 0.0)
-
         n = rng.poisson(lam=lambd * dt, size=n_paths)
         jump_log = np.where(
             n > 0,
             n * mu_j + np.sqrt(np.maximum(n, 0.0)) * sigma_j * rng.standard_normal(n_paths),
             0.0,
         )
-
-        drift = (rate - lambd * k_jump - 0.5 * vt) * dt
-        diff = np.sqrt(vt * dt) * zs
-        s[t + 1] = s[t] * np.exp(drift + diff + jump_log)
-
+        s[t + 1] = s[t] * np.exp((rate - lambd * k_jump - 0.5 * vt) * dt + np.sqrt(vt * dt) * zs + jump_log)
         n_cum[t + 1] = n_cum[t] + n
-
     return {"S": s, "V": v, "N": n_cum, "Lambda": lam_path}
 
 
-def simulate_bates_hawkes(spot, v0, kappa, theta, xi, rho,
-                          lambda0, lambda_bar, branching_ratio, beta,
-                          mu_j, sigma_j, rate, years, n_steps, n_paths, seed):
+def simulate_bates_hawkes(
+    spot, v0, kappa, theta, xi, rho, lambda0, lambda_bar, branching_ratio,
+    beta, mu_j, sigma_j, rate, years, n_steps, n_paths, seed,
+):
     rng = np.random.default_rng(seed)
     dt = years / n_steps
     alpha = branching_ratio * beta
-
     s = np.empty((n_steps + 1, n_paths), dtype=float)
     v = np.empty((n_steps + 1, n_paths), dtype=float)
     lam = np.empty((n_steps + 1, n_paths), dtype=float)
     n_cum = np.empty((n_steps + 1, n_paths), dtype=float)
-
-    s[0] = spot
-    v[0] = max(v0, 1e-8)
-    lam[0] = max(lambda0, 1e-10)
-    n_cum[0] = 0.0
-
-    base_comp = np.exp(mu_j + 0.5 * sigma_j**2) - 1.0
+    s[0], v[0], lam[0], n_cum[0] = spot, max(v0, 1e-8), max(lambda0, 1e-10), 0.0
+    k_jump = np.exp(mu_j + 0.5 * sigma_j**2) - 1.0
 
     for t in range(n_steps):
-        z1 = rng.standard_normal(n_paths)
-        z2 = rng.standard_normal(n_paths)
-        zv = z1
+        z1, z2 = rng.standard_normal(n_paths), rng.standard_normal(n_paths)
         zs = rho * z1 + np.sqrt(max(1.0 - rho**2, 0.0)) * z2
-
-        v[t + 1] = _vector_full_trunc_cir(v[t], kappa, theta, xi, dt, zv)
+        v[t + 1] = _vector_full_trunc_cir(v[t], kappa, theta, xi, dt, z1)
         vt = np.maximum(v[t], 0.0)
-
         lam_curr = np.maximum(lam[t], 1e-10)
         n = rng.poisson(lam=lam_curr * dt, size=n_paths)
         jump_log = np.where(
@@ -600,14 +444,9 @@ def simulate_bates_hawkes(spot, v0, kappa, theta, xi, rho,
             n * mu_j + np.sqrt(np.maximum(n, 0.0)) * sigma_j * rng.standard_normal(n_paths),
             0.0,
         )
-
-        drift = (rate - lam_curr * base_comp - 0.5 * vt) * dt
-        diff = np.sqrt(vt * dt) * zs
-        s[t + 1] = s[t] * np.exp(drift + diff + jump_log)
-
+        s[t + 1] = s[t] * np.exp((rate - lam_curr * k_jump - 0.5 * vt) * dt + np.sqrt(vt * dt) * zs + jump_log)
         lam[t + 1] = np.maximum(lam[t] + beta * (lambda_bar - lam[t]) * dt + alpha * n, 1e-10)
         n_cum[t + 1] = n_cum[t] + n
-
     return {"S": s, "V": v, "N": n_cum, "Lambda": lam}
 
 
@@ -639,53 +478,35 @@ def plot_single_path_panel(time_grid, values, title, ylabel, out, n_show=5):
     ax.set_ylabel(ylabel)
     ax.grid(True, alpha=0.25)
     fig.tight_layout()
-    fig.savefig(out, dpi=220, bbox_inches="tight")
+    save_png(fig, out)
     plt.close(fig)
 
 
 def plot_path_bands(time_grid, sims: dict[str, dict[str, np.ndarray]], out: Path):
     fig, axes = plt.subplots(2, 2, figsize=(12.8, 8.8))
-    axes = axes.ravel()
-
-    titles = {
-        "Black-Scholes": "Black-Scholes",
-        "Heston": "Heston",
-        "Bates": "Bates",
-        "Bates-Hawkes": "Bates-Hawkes",
-    }
-
-    for ax, (name, sim) in zip(axes, sims.items()):
+    for ax, (name, sim) in zip(axes.ravel(), sims.items()):
         s = sim["S"]
-        p10 = np.percentile(s, 10, axis=1)
-        p25 = np.percentile(s, 25, axis=1)
-        p50 = np.percentile(s, 50, axis=1)
-        p75 = np.percentile(s, 75, axis=1)
-        p90 = np.percentile(s, 90, axis=1)
+        p10, p25, p50, p75, p90 = [np.percentile(s, q, axis=1) for q in (10, 25, 50, 75, 90)]
         ax.fill_between(time_grid, p10, p90, alpha=0.18, label="10-90 band")
         ax.fill_between(time_grid, p25, p75, alpha=0.30, label="25-75 band")
         ax.plot(time_grid, p50, linewidth=2.0, label="Median")
-        ax.set_title(titles[name])
+        ax.set_title(name)
         ax.set_xlabel("Years")
         ax.set_ylabel("Simulated GLD price")
         ax.grid(True, alpha=0.25)
         ax.legend(loc="best")
-
     fig.suptitle("Five-year GLD path bands by model")
     fig.tight_layout()
-    fig.savefig(out, dpi=220, bbox_inches="tight")
+    save_png(fig, out)
     plt.close(fig)
 
 
 def plot_terminal_return_percentiles(sims: dict[str, dict[str, np.ndarray]], out: Path):
     fig, ax = plt.subplots(figsize=(9.2, 5.8))
     q = np.arange(0, 101, 1)
-
     for name, sim in sims.items():
-        terminal = sim["S"][-1]
-        ret = 100.0 * (terminal / sim["S"][0, 0] - 1.0)
-        pct = np.percentile(ret, q)
-        ax.plot(q, pct, label=name)
-
+        ret = 100.0 * (sim["S"][-1] / sim["S"][0, 0] - 1.0)
+        ax.plot(q, np.percentile(ret, q), label=name)
     ax.set_title("Terminal simple-return percentiles over five-year simulations")
     ax.set_xlabel("Percentile")
     ax.set_ylabel("Terminal simple return (%)")
@@ -693,34 +514,31 @@ def plot_terminal_return_percentiles(sims: dict[str, dict[str, np.ndarray]], out
     ax.grid(True, alpha=0.25)
     ax.legend(loc="best")
     fig.tight_layout()
-    fig.savefig(out, dpi=220, bbox_inches="tight")
+    save_png(fig, out)
     plt.close(fig)
 
 
 def plot_volatility_states(time_grid, sims: dict[str, dict[str, np.ndarray]], out: Path, n_show=5):
     fig, axes = plt.subplots(1, 3, figsize=(14.2, 4.6), sharey=True)
-    keys = [("Heston", "Heston"), ("Bates", "Bates"), ("Bates-Hawkes", "Bates-Hawkes")]
-    for ax, (k, title) in zip(axes, keys):
-        v = sims[k]["V"]
+    for ax, name in zip(axes, ["Heston", "Bates", "Bates-Hawkes"]):
+        v = sims[name]["V"]
         for i in range(min(n_show, v.shape[1])):
             ax.plot(time_grid, v[:, i], alpha=0.95)
-        ax.set_title(title)
+        ax.set_title(name)
         ax.set_xlabel("Years")
         ax.grid(True, alpha=0.25)
     axes[0].set_ylabel("Variance state")
     fig.suptitle("Stochastic-volatility paths on a common scale")
     fig.tight_layout()
-    fig.savefig(out, dpi=220, bbox_inches="tight")
+    save_png(fig, out)
     plt.close(fig)
 
 
 def plot_hawkes_jump_states(time_grid, sim: dict[str, np.ndarray], out: Path, n_show=5):
     fig, axes = plt.subplots(2, 1, figsize=(8.6, 6.6), sharex=True)
-    lam = sim["Lambda"]
-    n = sim["N"]
-    for i in range(min(n_show, lam.shape[1])):
-        axes[0].plot(time_grid, lam[:, i], alpha=0.95)
-        axes[1].plot(time_grid, n[:, i], alpha=0.95)
+    for i in range(min(n_show, sim["Lambda"].shape[1])):
+        axes[0].plot(time_grid, sim["Lambda"][:, i], alpha=0.95)
+        axes[1].plot(time_grid, sim["N"][:, i], alpha=0.95)
     axes[0].set_title("Bates-Hawkes intensity paths")
     axes[0].set_ylabel("Intensity")
     axes[0].grid(True, alpha=0.25)
@@ -729,17 +547,15 @@ def plot_hawkes_jump_states(time_grid, sim: dict[str, np.ndarray], out: Path, n_
     axes[1].set_ylabel("Cumulative count")
     axes[1].grid(True, alpha=0.25)
     fig.tight_layout()
-    fig.savefig(out, dpi=220, bbox_inches="tight")
+    save_png(fig, out)
     plt.close(fig)
 
 
 def plot_bates_jump_states(time_grid, sim: dict[str, np.ndarray], out: Path, n_show=5):
     fig, axes = plt.subplots(2, 1, figsize=(8.6, 6.6), sharex=True)
-    lam = sim["Lambda"]
-    n = sim["N"]
-    for i in range(min(n_show, lam.shape[1])):
-        axes[0].plot(time_grid, lam[:, i], alpha=0.95)
-        axes[1].plot(time_grid, n[:, i], alpha=0.95)
+    for i in range(min(n_show, sim["Lambda"].shape[1])):
+        axes[0].plot(time_grid, sim["Lambda"][:, i], alpha=0.95)
+        axes[1].plot(time_grid, sim["N"][:, i], alpha=0.95)
     axes[0].set_title("Bates constant Poisson intensity")
     axes[0].set_ylabel("Intensity")
     axes[0].grid(True, alpha=0.25)
@@ -748,7 +564,7 @@ def plot_bates_jump_states(time_grid, sim: dict[str, np.ndarray], out: Path, n_s
     axes[1].set_ylabel("Cumulative count")
     axes[1].grid(True, alpha=0.25)
     fig.tight_layout()
-    fig.savefig(out, dpi=220, bbox_inches="tight")
+    save_png(fig, out)
     plt.close(fig)
 
 
@@ -764,53 +580,45 @@ def infer_spot(surface: pd.DataFrame) -> float:
     raise ValueError("Surface has no valid spot column.")
 
 
-def build_simulations(sample_cc: pd.DataFrame, model_payloads: dict[str, dict[str, Any]],
-                      years: float, n_steps: int, n_paths: int, seed: int) -> tuple[np.ndarray, dict[str, dict[str, np.ndarray]], pd.DataFrame]:
+def build_simulations(sample_cc, model_payloads, years, n_steps, n_paths, seed):
     spot = infer_spot(sample_cc)
     rate = infer_constant_rate(sample_cc)
     time_grid = np.linspace(0.0, years, n_steps + 1)
 
-    bs = model_payloads["black_scholes"]
-    heston = model_payloads["heston"]
-    bates = model_payloads["bates"]
-    hawkes = model_payloads["bates_hawkes"]
-
-    sigma_bs = get_param(bs, "sigma")
-
-    h_v0 = get_param(heston, "v0")
-    h_kappa = get_param(heston, "kappa")
-    h_theta = get_param(heston, "theta")
-    h_xi = get_param(heston, "xi", "sigma")
-    h_rho = get_param(heston, "rho")
-
-    b_v0 = get_param(bates, "v0")
-    b_kappa = get_param(bates, "kappa")
-    b_theta = get_param(bates, "theta")
-    b_xi = get_param(bates, "xi", "sigma")
-    b_rho = get_param(bates, "rho")
-    b_lambd = get_param(bates, "lambd", "lambda", "lambda_J")
-    b_mu_j = get_param(bates, "mu_J")
-    b_sigma_j = get_param(bates, "sigma_J")
-
-    hw_v0 = get_param(hawkes, "v0")
-    hw_kappa = get_param(hawkes, "kappa")
-    hw_theta = get_param(hawkes, "theta")
-    hw_xi = get_param(hawkes, "xi", "sigma")
-    hw_rho = get_param(hawkes, "rho")
-    hw_lambda0 = get_param(hawkes, "lambda0")
-    hw_lambda_bar = get_param(hawkes, "lambda_bar")
-    hw_branch = get_param(hawkes, "branching_ratio")
-    hw_beta = get_param(hawkes, "beta")
-    hw_mu_j = get_param(hawkes, "mu_J")
-    hw_sigma_j = get_param(hawkes, "sigma_J")
+    bs, heston, bates, hawkes = (
+        model_payloads["black_scholes"],
+        model_payloads["heston"],
+        model_payloads["bates"],
+        model_payloads["bates_hawkes"],
+    )
 
     sims = {
-        "Black-Scholes": simulate_black_scholes(spot, sigma_bs, rate, years, n_steps, n_paths, seed + 10),
-        "Heston": simulate_heston(spot, h_v0, h_kappa, h_theta, h_xi, h_rho, rate, years, n_steps, n_paths, seed + 20),
-        "Bates": simulate_bates(spot, b_v0, b_kappa, b_theta, b_xi, b_rho, b_lambd, b_mu_j, b_sigma_j, rate, years, n_steps, n_paths, seed + 30),
-        "Bates-Hawkes": simulate_bates_hawkes(spot, hw_v0, hw_kappa, hw_theta, hw_xi, hw_rho,
-                                              hw_lambda0, hw_lambda_bar, hw_branch, hw_beta,
-                                              hw_mu_j, hw_sigma_j, rate, years, n_steps, n_paths, seed + 40),
+        "Black-Scholes": simulate_black_scholes(
+            spot, get_param(bs, "sigma"), rate, years, n_steps, n_paths, seed + 10
+        ),
+        "Heston": simulate_heston(
+            spot,
+            get_param(heston, "v0"), get_param(heston, "kappa"), get_param(heston, "theta"),
+            get_param(heston, "xi", "sigma"), get_param(heston, "rho"), rate,
+            years, n_steps, n_paths, seed + 20,
+        ),
+        "Bates": simulate_bates(
+            spot,
+            get_param(bates, "v0"), get_param(bates, "kappa"), get_param(bates, "theta"),
+            get_param(bates, "xi", "sigma"), get_param(bates, "rho"),
+            get_param(bates, "lambd", "lambda", "lambda_J"),
+            get_param(bates, "mu_J"), get_param(bates, "sigma_J"), rate,
+            years, n_steps, n_paths, seed + 30,
+        ),
+        "Bates-Hawkes": simulate_bates_hawkes(
+            spot,
+            get_param(hawkes, "v0"), get_param(hawkes, "kappa"), get_param(hawkes, "theta"),
+            get_param(hawkes, "xi", "sigma"), get_param(hawkes, "rho"),
+            get_param(hawkes, "lambda0"), get_param(hawkes, "lambda_bar"),
+            get_param(hawkes, "branching_ratio"), get_param(hawkes, "beta"),
+            get_param(hawkes, "mu_J"), get_param(hawkes, "sigma_J"), rate,
+            years, n_steps, n_paths, seed + 40,
+        ),
     }
 
     rows = []
@@ -818,14 +626,12 @@ def build_simulations(sample_cc: pd.DataFrame, model_payloads: dict[str, dict[st
         row = {"model": name, "spot0": spot, "rate": rate, "years": years, "n_steps": n_steps, "n_paths": n_paths}
         row.update(path_summary(sim))
         rows.append(row)
-    summary_df = pd.DataFrame(rows)
-
-    return time_grid, sims, summary_df
+    return time_grid, sims, pd.DataFrame(rows)
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--date", required=True, help="Calibration / latest surface date, e.g. 2026-09-02")
+    parser.add_argument("--date", required=True)
     parser.add_argument("--strategy", default="CC")
     parser.add_argument("--repo-root", default=".")
     parser.add_argument("--years", type=float, default=5.0)
@@ -839,9 +645,16 @@ def main():
     repo = Path(args.repo_root).resolve()
     date = pd.Timestamp(args.date).strftime("%Y-%m-%d")
     strategy = args.strategy.upper()
-
-    out_dir = repo / args.out_dir
+    out_dir = (repo / args.out_dir).resolve()
     ensure_dir(out_dir)
+
+    # Fail early if Windows cannot write to the target directory.
+    probe = out_dir / "_write_test.tmp"
+    try:
+        probe.write_bytes(b"ok")
+        probe.unlink()
+    except OSError as exc:
+        raise OSError(f"Output directory is not writable: {out_dir}. Original error: {exc}") from exc
 
     rates_path = repo / "data" / "processed" / "usd_treasury_history.csv"
     gld_path = repo / "data" / "processed" / "gld_daily_history.csv"
@@ -849,16 +662,9 @@ def main():
     sample_path = repo / "outputs" / "sampling" / date / f"sample_{strategy}_64.csv"
     calib_dir = repo / "outputs" / "calibrations" / strategy / date
 
-    if not rates_path.exists():
-        raise FileNotFoundError(rates_path)
-    if not gld_path.exists():
-        raise FileNotFoundError(gld_path)
-    if not full_surface_path.exists():
-        raise FileNotFoundError(full_surface_path)
-    if not sample_path.exists():
-        raise FileNotFoundError(sample_path)
-    if not calib_dir.exists():
-        raise FileNotFoundError(calib_dir)
+    for path in [rates_path, gld_path, full_surface_path, sample_path, calib_dir]:
+        if not path.exists():
+            raise FileNotFoundError(path)
 
     full_surface = load_surface(full_surface_path)
     sample_cc = load_surface(sample_path)
@@ -866,22 +672,23 @@ def main():
     if args.min_dte < 1:
         raise ValueError("--min-dte must be at least 1 day.")
 
-    if "dte" in full_surface.columns:
-        full_dte = pd.to_numeric(full_surface["dte"], errors="coerce")
-    else:
-        full_dte = 365.25 * pd.to_numeric(full_surface["T"], errors="coerce")
+    full_dte = (
+        pd.to_numeric(full_surface["dte"], errors="coerce")
+        if "dte" in full_surface.columns
+        else 365.25 * full_surface["T"]
+    )
     full_surface = full_surface.loc[full_dte.ge(float(args.min_dte))].copy()
     full_surface = full_surface.sort_values(["T", "K"]).reset_index(drop=True)
 
-    if "dte" in sample_cc.columns:
-        sample_dte = pd.to_numeric(sample_cc["dte"], errors="coerce")
-    else:
-        sample_dte = 365.25 * pd.to_numeric(sample_cc["T"], errors="coerce")
+    sample_dte = (
+        pd.to_numeric(sample_cc["dte"], errors="coerce")
+        if "dte" in sample_cc.columns
+        else 365.25 * sample_cc["T"]
+    )
     if sample_dte.lt(float(args.min_dte)).any() or sample_dte.isna().any():
         raise ValueError(
-            f"The selected {strategy} sample contains observations below the "
-            f"official DTE >= {args.min_dte} day domain. Regenerate sampling "
-            "before producing figures."
+            f"The selected {strategy} sample contains observations below the official "
+            f"DTE >= {args.min_dte} day domain. Regenerate sampling first."
         )
 
     model_payloads = read_model_params(calib_dir)
@@ -897,63 +704,39 @@ def main():
         "rate_curve_model": "Nelson-Siegel-Svensson",
         "rate_fit_target": "continuous_rate",
         "official_min_dte": int(args.min_dte),
+        "iv_colormap": IV_CMAP,
+        "cc_nodes_share_surface_colormap": True,
     }
 
-    # Static / descriptive figures
     plot_treasury_curve(rates_path, pd.Timestamp(date), out_dir / "usd_treasury_curve.png")
     plot_sampling_comparison(full_surface, sample_cc, out_dir / "sampling_comparison.png")
     plot_surface_3d(full_surface, sample_cc, out_dir / "volatility_surface_3d.png")
     normality_stats = plot_return_normality(gld_path, out_dir / "gld_return_normality.png")
 
-    # Simulations and simulation-based figures
     time_grid, sims, summary_df = build_simulations(
-        sample_cc=sample_cc,
-        model_payloads=model_payloads,
-        years=float(args.years),
-        n_steps=int(args.n_steps),
-        n_paths=int(args.n_paths),
-        seed=int(args.seed),
+        sample_cc, model_payloads, float(args.years), int(args.n_steps), int(args.n_paths), int(args.seed)
     )
 
     plot_single_path_panel(time_grid, sims["Black-Scholes"]["S"], "Five sample Black-Scholes paths", "GLD price", out_dir / "paths_black_scholes_5.png")
     plot_single_path_panel(time_grid, sims["Heston"]["S"], "Five sample Heston paths", "GLD price", out_dir / "paths_heston_5.png")
     plot_single_path_panel(time_grid, sims["Bates"]["S"], "Five sample Bates paths", "GLD price", out_dir / "paths_bates_5.png")
     plot_single_path_panel(time_grid, sims["Bates-Hawkes"]["S"], "Five sample Bates-Hawkes paths", "GLD price", out_dir / "paths_bates_hawkes_5.png")
-
     plot_path_bands(time_grid, sims, out_dir / "gold_path_stats_by_model.png")
     plot_terminal_return_percentiles(sims, out_dir / "terminal_return_percentiles.png")
     plot_volatility_states(time_grid, sims, out_dir / "volatility_state_paths.png")
     plot_hawkes_jump_states(time_grid, sims["Bates-Hawkes"], out_dir / "hawkes_jump_paths.png")
     plot_bates_jump_states(time_grid, sims["Bates"], out_dir / "bates_poisson_jump_paths.png")
 
-    # Useful metadata for the later LaTeX update
     summary_df.to_csv(out_dir / "terminal_path_stats.csv", index=False)
     (out_dir / "normality_stats.json").write_text(json.dumps(normality_stats, indent=2), encoding="utf-8")
     (out_dir / "figure_manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
     print("=" * 92)
-    print("[OK] Missing IBKR figures generated")
+    print("[OK] IBKR figures generated")
     print(f"[OK] Output directory : {out_dir}")
     print(f"[OK] Full surface     : {full_surface_path.name} | rows = {len(full_surface)}")
     print(f"[OK] CC sample        : {sample_path.name} | rows = {len(sample_cc)}")
-    print(f"[OK] Calibration dir  : {calib_dir}")
-    print("[OK] Figures:")
-    for name in [
-        "usd_treasury_curve.png",
-        "sampling_comparison.png",
-        "volatility_surface_3d.png",
-        "gld_return_normality.png",
-        "terminal_return_percentiles.png",
-        "paths_black_scholes_5.png",
-        "paths_heston_5.png",
-        "paths_bates_5.png",
-        "paths_bates_hawkes_5.png",
-        "gold_path_stats_by_model.png",
-        "volatility_state_paths.png",
-        "hawkes_jump_paths.png",
-        "bates_poisson_jump_paths.png",
-    ]:
-        print(f"   - {name}")
+    print(f"[OK] IV palette       : {IV_CMAP} (same normalization for surface and CC nodes)")
     print("=" * 92)
 
 
