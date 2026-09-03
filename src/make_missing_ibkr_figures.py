@@ -46,6 +46,8 @@ from matplotlib.ticker import MaxNLocator
 from scipy.interpolate import LinearNDInterpolator
 from scipy.stats import gaussian_kde, jarque_bera, norm, normaltest, probplot, shapiro
 
+from rates import load_rate_history, curve_without_lookahead, fit_nss_curve, nss_rates
+
 
 def ensure_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
@@ -211,18 +213,58 @@ def get_param(payload: dict[str, Any], *names: str, default: float | None = None
 
 
 def plot_treasury_curve(rates_path: Path, asof: pd.Timestamp, out: Path) -> None:
-    rates = load_rates_long(rates_path)
-    target_date = nearest_date_at_or_before(rates["date"], asof)
-    day = rates.loc[pd.to_datetime(rates["date"]) == target_date].copy()
-    day = day.sort_values("tenor_years")
+    """Plot observed Treasury tenors and the no-look-ahead NSS curve."""
+    history = load_rate_history(rates_path)
+    curve, curve_date = curve_without_lookahead(history, asof)
+    fit = fit_nss_curve(curve)
 
-    fig, ax = plt.subplots(figsize=(8.5, 5.5))
-    ax.plot(day["tenor_years"], day["rate"], marker="o")
-    ax.set_title(f"USD Treasury curve used for option discounting ({target_date.date()})")
+    observed_T = curve["maturity_years"].to_numpy(dtype=float)
+    observed_r = curve["continuous_rate"].to_numpy(dtype=float)
+
+    t_min = max(1.0 / 365.25, float(observed_T.min()))
+    t_max = float(observed_T.max())
+    dense_T = np.linspace(t_min, t_max, 600)
+    dense_r = nss_rates(dense_T, fit)
+
+    fig, ax = plt.subplots(figsize=(8.8, 5.6))
+
+    ax.scatter(
+        observed_T,
+        100.0 * observed_r,
+        s=45,
+        label="Observed Treasury tenors",
+        zorder=3,
+    )
+    ax.plot(
+        dense_T,
+        100.0 * dense_r,
+        linewidth=2.0,
+        label="Nelson-Siegel-Svensson fit",
+    )
+
+    ax.set_title(
+        f"USD Treasury NSS curve used for option discounting ({curve_date.date()})"
+    )
     ax.set_xlabel("Maturity (years)")
-    ax.set_ylabel("Yield (%)")
+    ax.set_ylabel("Continuously compounded rate (%)")
     ax.grid(True, alpha=0.3)
-    ax.xaxis.set_major_locator(MaxNLocator(integer=False))
+    ax.legend(loc="best")
+
+    diagnostics = (
+        f"NSS RMSE = {fit.rmse_bps:.3f} bp\\n"
+        f"$\\tau_1$ = {fit.tau1:.3f} y\\n"
+        f"$\\tau_2$ = {fit.tau2:.3f} y"
+    )
+    ax.text(
+        0.98,
+        0.04,
+        diagnostics,
+        transform=ax.transAxes,
+        ha="right",
+        va="bottom",
+        bbox=dict(boxstyle="round", alpha=0.15),
+    )
+
     fig.tight_layout()
     fig.savefig(out, dpi=220, bbox_inches="tight")
     plt.close(fig)
@@ -726,6 +768,8 @@ def main():
         "sample_path": str(sample_path),
         "calibration_dir": str(calib_dir),
         "out_dir": str(out_dir),
+        "rate_curve_model": "Nelson-Siegel-Svensson",
+        "rate_fit_target": "continuous_rate",
     }
 
     # Static / descriptive figures

@@ -1,0 +1,11 @@
+{
+  "date": "2026-09-02",
+  "strategy": "CC",
+  "repo_root": "C:\\Users\\salvm\\Desktop\\GitHub\\team8_clean",
+  "full_surface_path": "C:\\Users\\salvm\\Desktop\\GitHub\\team8_clean\\data\\processed\\full_surfaces\\GLD_2026-09-02_eligible_full_surface.csv",
+  "sample_path": "C:\\Users\\salvm\\Desktop\\GitHub\\team8_clean\\outputs\\sampling_all_2026-09-02\\sample_CC_64.csv",
+  "calibration_dir": "C:\\Users\\salvm\\Desktop\\GitHub\\team8_clean\\outputs\\calibrations\\CC\\2026-09-02",
+  "out_dir": "C:\\Users\\salvm\\Desktop\\GitHub\\team8_clean\\img\\diagnostics_ibkr",
+  "rate_curve_model": "Nelson-Siegel-Svensson",
+  "rate_fit_target": "continuous_rate"
+}
