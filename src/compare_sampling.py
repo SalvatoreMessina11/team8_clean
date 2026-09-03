@@ -1,4 +1,4 @@
-"""Compare four 64-node sampling geometries before stochastic-model calibration."""
+"""Compare structured option-surface sampling geometries before calibration."""
 
 from __future__ import annotations
 
@@ -58,7 +58,7 @@ def main():
     required_n = args.n_t * args.n_k
     if len(full) < required_n:
         raise ValueError(
-            f"64-node comparison impossible: full eligible surface has "
+            f"{required_n}-node comparison impossible: full eligible surface has "
             f"{len(full)} points, requires at least {required_n}."
         )
 
@@ -78,7 +78,7 @@ def main():
             n_K=args.n_k,
         )
         diag = Sampling.interpolation_diagnostics(full, sample)
-        sample.to_csv(out / f"sample_{code}_64.csv", index=False)
+        sample.to_csv(out / f"sample_{code}_{required_n}.csv", index=False)
 
         row = {
             "strategy": code,
@@ -98,9 +98,6 @@ def main():
         details[code] = diag
 
     comparison = pd.DataFrame(rows)
-
-    # Primary criterion requested: infinity norm on unseen market points.
-    # Tie-breakers: holdout RMSE then holdout MAE.
     comparison = comparison.sort_values(
         [
             "holdout_linf_bps_iv",

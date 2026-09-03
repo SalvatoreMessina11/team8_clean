@@ -8,6 +8,9 @@ domain are attempted.
 Historical MIDPOINT is used as the primary cross-sectional price because many
 valid strikes may have no trade on a particular day. IBKR's expired-option
 limitation still applies: contracts already expired today cannot be recovered.
+
+This file is retained for reproducibility. The current offline reconstruction
+from options_GLD_daily_60.parquet does not call this script.
 """
 
 from __future__ import annotations

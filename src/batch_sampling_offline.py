@@ -1,23 +1,27 @@
 """
-OFFLINE-ONLY sampling audit.
+OFFLINE-ONLY cross-date sampling audit.
 
 This script NEVER connects to IBKR.
 
-It scans already-downloaded files matching:
+By default it scans the historical surfaces produced by:
 
-    data/processed/full_surfaces/GLD_YYYY-MM-DD_eligible_full_surface.csv
+    python src/surface_builder.py --build-all
 
-For every available date with at least 64 eligible observations it compares:
+It also accepts the dense full-surface directory through --input-dir.
+
+Recognized filenames:
+    GLD_YYYY-MM-DD_eligible_historical_surface.csv
+    GLD_YYYY-MM-DD_eligible_full_surface.csv
+
+For every date with at least n_t * n_k eligible observations it compares:
 
     UU = Uniform T + Uniform K
     CU = Chebyshev T + Uniform K
     UC = Uniform T + Chebyshev K
     CC = Chebyshev T + Chebyshev K
 
-and aggregates the holdout interpolation errors across dates.
-
 Primary ranking:
-    mean holdout L_inf across available dates.
+    mean holdout L_inf across usable dates.
 """
 
 from __future__ import annotations
@@ -41,7 +45,7 @@ STRATEGIES = {
 
 
 DATE_RE = re.compile(
-    r"GLD_(\d{4}-\d{2}-\d{2})_eligible_full_surface\.csv$"
+    r"GLD_(\d{4}-\d{2}-\d{2})_eligible_(?:historical|full)_surface\.csv$"
 )
 
 
@@ -49,7 +53,7 @@ def discover_surfaces(input_dir, start=None, end=None):
     input_dir = Path(input_dir)
     rows = []
 
-    for path in sorted(input_dir.glob("GLD_*_eligible_full_surface.csv")):
+    for path in sorted(input_dir.glob("GLD_*_eligible_*_surface.csv")):
         match = DATE_RE.search(path.name)
         if not match:
             continue
@@ -99,7 +103,7 @@ def evaluate_date(date, full, output_dir, n_t=8, n_k=8):
     if len(full) < required_n:
         return [], {
             "date": date.strftime("%Y-%m-%d"),
-            "status": "skip_lt_64",
+            "status": f"skip_lt_{required_n}",
             "eligible_points": int(len(full)),
         }
 
@@ -235,7 +239,7 @@ def main():
 
     parser.add_argument(
         "--input-dir",
-        default="data/processed/full_surfaces",
+        default="data/processed/sparse_historical_surfaces",
     )
     parser.add_argument(
         "--output-dir",
@@ -247,6 +251,7 @@ def main():
     parser.add_argument("--n-k", type=int, default=8)
 
     args = parser.parse_args()
+    required_n = args.n_t * args.n_k
 
     surfaces = discover_surfaces(
         args.input_dir,
@@ -256,8 +261,9 @@ def main():
 
     if not surfaces:
         raise ValueError(
-            "No existing full-surface CSV files found. "
-            "This script does not download anything from IBKR."
+            "No existing surface CSV files found. "
+            "Run surface_builder.py --build-all first, or pass another "
+            "--input-dir. This script never downloads from IBKR."
         )
 
     out = Path(args.output_dir)
@@ -266,7 +272,8 @@ def main():
     print("=" * 90)
     print("OFFLINE SAMPLING AUDIT")
     print(f"Existing surfaces found: {len(surfaces)}")
-    print("IBKR connection: NONE")
+    print(f"Required points/date    : {required_n}")
+    print("IBKR connection         : NONE")
     print("=" * 90)
 
     rows = []
@@ -311,8 +318,7 @@ def main():
             )
         else:
             print(
-                f"    skipped: {len(full)} < "
-                f"{args.n_t * args.n_k}"
+                f"    skipped: {len(full)} < {required_n}"
             )
 
     raw, summary = aggregate(rows)
@@ -338,7 +344,7 @@ def main():
     print("=" * 110)
 
     if summary.empty:
-        print("[WARN] No date had >=64 eligible observations.")
+        print(f"[WARN] No date had >={required_n} eligible observations.")
         return
 
     cols = [

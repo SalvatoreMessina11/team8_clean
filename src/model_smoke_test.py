@@ -27,8 +27,6 @@ def main():
     )
     assert np.isfinite(bates) and bates > 0.0
 
-    # Exact Hawkes with alpha=0 and lambda0=lambda_bar must reduce to
-    # constant-intensity Bates. This is a useful cross-model consistency check.
     hawkes_limit = BatesHawkesExact.hawkes_price_fast(
         S, K, T, 0.04, 2.0, 0.04, 0.30, -0.70,
         0.40, 0.40, 0.0, 2.0, -0.10, 0.20, r

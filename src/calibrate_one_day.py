@@ -230,7 +230,6 @@ def main():
             f"time={result['elapsed_seconds']:.1f}s"
         )
 
-    # Hawkes needs a Bates seed, so Bates is calibrated whenever Hawkes is requested.
     if "bates" in requested or "hawkes" in requested:
         print("\n[3] Calibrating Bates...")
         report = Bates.calibrate_bates(
