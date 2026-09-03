@@ -36,7 +36,7 @@ Recommended fixed robustness parameters:
 Example
 -------
 python src/compare_sampling_all.py ^
-  --surface data/processed/full_surfaces/GLD_2026-09-02_eligible_full_surface.csv ^
+  --surface data/processed/full_surfaces/GLD_2026-09-02_eligible_adaptive_surface.csv ^
   --output-dir outputs/sampling/2026-09-02 ^
   --n-t 8 ^
   --n-k 8 ^
@@ -676,7 +676,7 @@ def main() -> None:
     parser.add_argument(
         "--surface",
         required=True,
-        help="Eligible full-surface CSV or Parquet file.",
+        help="Eligible market-surface CSV or Parquet file.",
     )
 
     parser.add_argument(

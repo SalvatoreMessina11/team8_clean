@@ -280,8 +280,8 @@ def main() -> None:
         else out / f"GLD_{slug}_midpoint_raw.csv"
     )
 
-    canonical = out / f"GLD_{slug}_eligible_full_surface.csv"
-    backup = out / f"GLD_{slug}_eligible_full_surface_pre_dte75_backup.csv"
+    canonical = out / f"GLD_{slug}_eligible_adaptive_surface.csv"
+    backup = out / f"GLD_{slug}_eligible_adaptive_surface_pre_dte75_backup.csv"
     raw_nss_path = out / f"GLD_{slug}_midpoint_raw_nss.csv"
     fit_path = out / f"GLD_{slug}_nss_curve.json"
 

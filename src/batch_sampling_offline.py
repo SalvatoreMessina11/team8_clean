@@ -11,7 +11,8 @@ It also accepts the dense full-surface directory through --input-dir.
 
 Recognized filenames:
     GLD_YYYY-MM-DD_eligible_historical_surface.csv
-    GLD_YYYY-MM-DD_eligible_full_surface.csv
+    GLD_YYYY-MM-DD_eligible_adaptive_surface.csv
+    GLD_YYYY-MM-DD_eligible_full_surface.csv (legacy compatibility)
 
 For every date with at least n_t * n_k eligible observations it compares:
 
@@ -47,7 +48,7 @@ STRATEGIES = {
 
 
 DATE_RE = re.compile(
-    r"GLD_(\d{4}-\d{2}-\d{2})_eligible_(?:historical|full)_surface\.csv$"
+    r"GLD_(\d{4}-\d{2}-\d{2})_eligible_(?:historical|adaptive|full)_surface\.csv$"
 )
 
 
