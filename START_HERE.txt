@@ -1,0 +1,14 @@
+TEAM 8 CLEAN — START HERE
+
+1. Apri PowerShell nella cartella.
+2. Attiva/crea .venv.
+3. python -m pip install -r requirements.txt
+4. Tassi:
+   python src\ibkr_gld_weekly_data.py rates --treasury-csv data\raw\daily-treasury-rates2026.csv --output-dir data\processed
+5. GLD:
+   python src\ibkr_gld_weekly_data.py stock --start 2026-01-02 --end 2026-09-02 --output-dir data\processed --port 7497
+6. Test modelli:
+   python src\model_smoke_test.py
+7. Fetch consigliato opzioni:
+   python src\ibkr_gld_recent_daily_fetch.py --end 2026-09-02 --sessions 60 --output-dir data\processed --port 7497
+8. Invia options_GLD_daily_60_coverage.csv per decidere daily vs weekly.

@@ -1,0 +1,6 @@
+numpy
+pandas
+scipy
+pyarrow
+ib_insync
+nelson-siegel-svensson

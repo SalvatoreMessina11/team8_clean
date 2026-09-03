@@ -1,0 +1,256 @@
+% Fragment to be included in Articolo_team8_working.tex.
+% Suggested packages in the main preamble:
+% \usepackage{amsmath,amssymb,booktabs}
+%
+% This section is intentionally self-contained and can be inserted directly
+% into the empirical-validation part of the paper.
+
+\section{Rolling one-step-ahead out-of-sample validation}
+\label{sec:rolling_oos}
+
+The predictive comparison is implemented as a strictly chronological
+one-step-ahead exercise.  Let $\mathcal{S}_t$ denote the option-implied
+volatility surface observed at date $t$.  For each model $m$, the parameter
+vector $\widehat{\boldsymbol{\theta}}_{m,t}$ is estimated using only information
+available at $t$:
+\begin{equation}
+    \widehat{\boldsymbol{\theta}}_{m,t}
+    =
+    \arg\min_{\boldsymbol{\theta}_m}
+    \mathcal{L}
+    \left(
+        \mathcal{S}_t;
+        \boldsymbol{\theta}_m
+    \right).
+\end{equation}
+The calibrated model is then used to produce a forecast of the normalized
+implied-volatility surface at the next observation date,
+\begin{equation}
+    \widehat{\mathcal{S}}^{(m)}_{t+1|t}
+    =
+    f_m
+    \left(
+        \widehat{\boldsymbol{\theta}}_{m,t},
+        \mathcal{I}_t
+    \right),
+\end{equation}
+where $\mathcal{I}_t$ is the information set observable at $t$.  No variable
+dated after $t$ is used either in the calibration or in the construction of the
+forecast.
+
+Once $\mathcal{S}_{t+1}$ is observed, the forecast error is computed and the
+procedure rolls forward.  The realized surface at $t+1$ can therefore be used
+to recalibrate the model for the subsequent forecast, but it cannot affect the
+already produced $t\rightarrow t+1$ prediction.  Schematically,
+\begin{equation}
+    \mathcal{S}_t
+    \longrightarrow
+    \widehat{\boldsymbol{\theta}}_{m,t}
+    \longrightarrow
+    \widehat{\mathcal{S}}^{(m)}_{t+1|t}
+    \longrightarrow
+    \mathcal{S}_{t+1}
+    \longrightarrow
+    \widehat{\boldsymbol{\theta}}_{m,t+1}.
+\end{equation}
+Consequently, with $N$ observed weekly surfaces, the experiment produces
+$N-1$ genuine out-of-sample forecasts for each competing model.
+
+\subsection{Weekly sampling frequency}
+\label{subsec:weekly_frequency}
+
+In principle, the same design can be implemented at the daily frequency:
+each trading-day surface $\mathcal{S}_t$ can be used to recalibrate the models
+and forecast the surface observed on the following trading day.  A daily
+implementation is statistically attractive because it maximizes the number of
+one-step-ahead observations and more closely mimics a continuously updated
+production system.
+
+The empirical analysis nevertheless adopts a weekly frequency.  This choice is
+primarily computational.  Black--Scholes calibration is inexpensive, whereas
+the repeated constrained calibration of Heston, Bates, and especially the full
+Bates--Hawkes specification is substantially more demanding.  Moving from a
+weekly to a daily design would require approximately five times as many
+chronological recalibrations over the same calendar interval, in addition to
+the repeated construction, filtering, interpolation, and pricing of each
+option surface.  The weekly design therefore preserves the essential
+out-of-sample structure while keeping the full four-model comparison
+computationally tractable.
+
+The sampling rule selects the last available option surface in each
+Friday-ending week.  For the frozen data window used in this study,
+January 2, 2026 through September 2, 2026, this convention identifies 36
+weekly buckets and hence 35 one-week-ahead forecast transitions per model.
+The final observation belongs to the Friday-ending week of September 4 and is
+therefore a partial week when the dataset is frozen on September 2.  If only
+fully completed Friday-ending weeks are retained, the sample through
+August 28, 2026 contains 35 weekly surfaces.
+
+Thus, using all 36 available weekly buckets, the four-model exercise contains
+\begin{equation}
+    35 \times 4 = 140
+\end{equation}
+model-specific out-of-sample forecast origins, before accounting for the
+multiple normalized strike--maturity nodes evaluated at each origin.
+
+\subsection{Common normalized surface}
+\label{subsec:normalized_surface}
+
+Directly comparing raw option contracts across dates is problematic because
+strikes and expirations change through time.  Forecast accuracy is therefore
+evaluated on a fixed normalized grid defined in moneyness and time to maturity.
+For node $j$,
+\begin{equation}
+    x_j =
+    \left(
+        \frac{K_j}{S_t},
+        T_j
+    \right),
+\end{equation}
+where $K_j/S_t$ is moneyness and $T_j$ is maturity expressed in years.
+Observed implied volatilities are interpolated onto this ex-ante grid using only
+the cross-section available on the corresponding observation date.  The same
+grid is then used for all models and all forecast dates.
+
+This normalization separates predictive performance from mechanical changes in
+the list of traded strikes and expirations and permits node-by-node comparison
+of the realized and forecast implied-volatility surfaces.
+
+\subsection{Risk-free term structure and no-look-ahead convention}
+\label{subsec:oos_rates}
+
+The risk-free term structure is supplied from a separate daily U.S. Treasury
+dataset.  At each forecast origin $t$, the procedure selects the most recent
+Treasury curve whose observation date is no later than $t$:
+\begin{equation}
+    d_t^{r}
+    =
+    \max
+    \left\{
+        d :
+        d \leq t,\;
+        d \in \mathcal{D}^{r}
+    \right\}.
+\end{equation}
+Therefore, a Treasury observation published after the forecast origin can never
+enter the calibration or forecast.  Rates for option maturities between quoted
+Treasury tenors are obtained by interpolation of the contemporaneously
+available term structure.  The same no-look-ahead rate curve is used across all
+competing models at a given forecast origin.
+
+\subsection{Benchmarks}
+\label{subsec:oos_benchmarks}
+
+Model forecasts are compared with two simple benchmarks.  The first is an
+expanding prevailing-mean forecast.  For each normalized surface node $j$, the
+benchmark at time $t$ is
+\begin{equation}
+    \widehat{\sigma}^{\,\mathrm{Mean}}_{j,t+1|t}
+    =
+    \frac{1}{N_{j,t}}
+    \sum_{\tau \leq t}
+    \sigma_{j,\tau},
+\end{equation}
+where only observations available through $t$ are included.  The benchmark
+therefore evolves through time and does not use the full-sample mean.
+
+The second benchmark is a random-walk forecast,
+\begin{equation}
+    \widehat{\sigma}^{\,\mathrm{RW}}_{j,t+1|t}
+    =
+    \sigma_{j,t},
+\end{equation}
+which assumes that the most recently observed normalized implied-volatility
+surface remains unchanged over the next forecast interval.  This is a useful
+and demanding benchmark for persistent volatility surfaces.
+
+\subsection{Out-of-sample loss and predictive comparison}
+\label{subsec:oos_metrics}
+
+For model $m$, node $j$, and target date $t+1$, define the forecast error
+\begin{equation}
+    e^{(m)}_{j,t+1}
+    =
+    \sigma_{j,t+1}
+    -
+    \widehat{\sigma}^{(m)}_{j,t+1|t}.
+\end{equation}
+The main loss measures are mean absolute error and root mean squared error,
+computed exclusively from forecasts made before the corresponding target
+surface was observed.
+
+Relative predictive performance is summarized through the out-of-sample
+coefficient of determination,
+\begin{equation}
+    R^2_{\mathrm{OOS},m}
+    =
+    1 -
+    \frac{
+        \sum_{t,j}
+        \left(
+            \sigma_{j,t+1}
+            -
+            \widehat{\sigma}^{(m)}_{j,t+1|t}
+        \right)^2
+    }{
+        \sum_{t,j}
+        \left(
+            \sigma_{j,t+1}
+            -
+            \widehat{\sigma}^{(\mathrm{bench})}_{j,t+1|t}
+        \right)^2
+    }.
+\end{equation}
+A positive $R^2_{\mathrm{OOS}}$ indicates that the model improves upon the
+chosen benchmark on the common out-of-sample observations, while a negative
+value indicates that the benchmark generates lower squared forecast error.
+
+In addition to aggregate losses, cumulative loss differentials can be reported:
+\begin{equation}
+    CL^{(m,b)}_T
+    =
+    \sum_{t \leq T}
+    \left(
+        L^{(b)}_t
+        -
+        L^{(m)}_t
+    \right),
+\end{equation}
+where $b$ denotes the comparator.  An increasing cumulative differential
+therefore indicates periods in which the named stochastic model systematically
+outperforms the benchmark.
+
+\subsection{Relation to the frozen-parameter robustness exercise}
+\label{subsec:frozen_robustness}
+
+The rolling exercise should be distinguished from a frozen-parameter holdout
+test.  In the rolling design, every new observed surface becomes part of the
+information set and the models are recalibrated before the next forecast.  This
+is intended to mimic the operation of a model that is regularly updated in
+practice.  A frozen-parameter experiment instead estimates the model at a
+single historical cutoff and retains those parameters throughout a subsequent
+holdout interval.  The latter asks whether one calibration remains structurally
+stable over a long horizon, whereas the rolling exercise asks which model
+delivers the best repeated real-time one-step-ahead forecasts.
+
+The rolling weekly validation is therefore treated as the primary predictive
+test, while a longer frozen-parameter holdout can be retained as a separate
+robustness and parameter-stability exercise.
+
+\subsection{Data-availability caveat for retrospective IBKR reconstruction}
+\label{subsec:ibkr_caveat}
+
+A retrospective option-surface study must also respect the historical-data
+coverage of the data vendor.  Interactive Brokers does not provide historical
+data for expired option contracts.  Consequently, a complete January--September
+2026 option universe cannot necessarily be reconstructed retrospectively in
+September from IBKR alone, because many short-dated contracts traded earlier in
+the year have already expired.  Historical bars for contracts that remain
+active can still be used when available, but such a backfill is mechanically
+tilted toward longer-dated options.
+
+For this reason, historical IBKR backfills should be accompanied by a
+date-by-date coverage audit.  Going forward, the preferred procedure is to save
+each complete weekly option-chain snapshot locally when it is observed.  This
+creates a permanent sequence of point-in-time surfaces and avoids survivorship
+bias caused by the later disappearance of expired contracts.
