@@ -8,11 +8,12 @@ It then:
     1. selects the latest Treasury curve with curve_date <= option date;
     2. fits Nelson-Siegel-Svensson to ``continuous_rate``;
     3. evaluates the NSS curve at every option maturity;
-    4. recomputes implied volatility and Black-Scholes Vega;
-    5. reapplies the IV/Vega eligibility filters;
-    6. overwrites the canonical eligible full-surface CSV, after making a
-       one-time backup of the pre-NSS version;
-    7. writes an NSS fit JSON for reproducibility.
+    4. restricts the official calibration domain to DTE >= 75 days by default;
+    5. recomputes implied volatility and Black-Scholes Vega;
+    6. reapplies the IV/Vega eligibility filters;
+    7. overwrites the canonical eligible full-surface CSV, after making a
+       one-time backup of the pre-DTE-floor version;
+    8. writes an NSS fit JSON for reproducibility.
 
 No option price, strike, expiry, conId, or other market observation is created
 or altered.
@@ -123,6 +124,8 @@ def rebuild(
     stock_path: Path,
     rates_path: Path,
     output_dir: Path,
+    min_dte: int,
+    max_dte: int,
     min_price: float,
     min_iv: float,
     max_iv: float,
@@ -134,7 +137,19 @@ def rebuild(
     spot = _get_spot(raw_original, stock_path, target)
     raw = _normalise_raw(raw_original, target, spot)
 
-    raw = raw.loc[raw["price"].gt(float(min_price))].copy()
+    if int(min_dte) < 1 or int(max_dte) < int(min_dte):
+        raise ValueError("Require 1 <= min_dte <= max_dte.")
+
+    raw = raw.loc[
+        raw["dte"].between(int(min_dte), int(max_dte))
+        & raw["price"].gt(float(min_price))
+    ].copy()
+
+    if raw.empty:
+        raise RuntimeError(
+            f"No midpoint observations remain after DTE {min_dte}-{max_dte} "
+            "and price-domain filters."
+        )
 
     rate_history = load_rate_history(rates_path)
     rates, curve_date, fit = rates_for_date(
@@ -211,6 +226,8 @@ def rebuild(
         "curve_date": pd.Timestamp(curve_date).strftime("%Y-%m-%d"),
         "rate_curve_model": "Nelson-Siegel-Svensson",
         "fit_target": "continuous_rate",
+        "official_min_dte": int(min_dte),
+        "max_dte": int(max_dte),
         "note": (
             "NSS is fitted to the project's continuously compounded "
             "Treasury par-yield proxy; this is not a bootstrapped zero curve."
@@ -244,6 +261,8 @@ def main() -> None:
         "--rates",
         default="data/processed/usd_treasury_history.csv",
     )
+    p.add_argument("--min-dte", type=int, default=75)
+    p.add_argument("--max-dte", type=int, default=730)
     p.add_argument("--min-price", type=float, default=0.05)
     p.add_argument("--min-iv", type=float, default=0.03)
     p.add_argument("--max-iv", type=float, default=1.50)
@@ -262,7 +281,7 @@ def main() -> None:
     )
 
     canonical = out / f"GLD_{slug}_eligible_full_surface.csv"
-    backup = out / f"GLD_{slug}_eligible_full_surface_pre_nss_backup.csv"
+    backup = out / f"GLD_{slug}_eligible_full_surface_pre_dte75_backup.csv"
     raw_nss_path = out / f"GLD_{slug}_midpoint_raw_nss.csv"
     fit_path = out / f"GLD_{slug}_nss_curve.json"
 
@@ -272,6 +291,8 @@ def main() -> None:
         stock_path=Path(args.stock),
         rates_path=Path(args.rates),
         output_dir=out,
+        min_dte=args.min_dte,
+        max_dte=args.max_dte,
         min_price=args.min_price,
         min_iv=args.min_iv,
         max_iv=args.max_iv,
@@ -293,6 +314,7 @@ def main() -> None:
     print("=" * 88)
     print(f"[OK] DATE                 : {slug}")
     print(f"[OK] RATE MODEL           : NSS")
+    print(f"[OK] DTE DOMAIN           : {args.min_dte} -> {args.max_dte} days")
     print(f"[OK] TREASURY CURVE DATE  : {fit_payload['curve_date']}")
     print(
         f"[OK] NSS TAU              : "

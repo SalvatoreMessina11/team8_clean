@@ -1,7 +1,7 @@
 """Batch wrapper for calibrate_surface.py on dense sampling outputs.
 
 Default expected sample path for each date:
-    outputs/sampling_all_<DATE>/sample_<STRATEGY>_64.csv
+    outputs/sampling/<DATE>/sample_<STRATEGY>_64.csv
 
 Each date is delegated to calibrate_surface.py, which handles resume and
 immediate per-model saving.
@@ -47,11 +47,12 @@ def main() -> None:
     parser.add_argument("--models", default="bs,heston,bates,hawkes")
     parser.add_argument("--profile", choices=["quick", "full"], default="full")
     parser.add_argument("--seed", type=int, default=8)
+    parser.add_argument("--min-dte", type=int, default=75)
     parser.add_argument("--output-root", default="outputs/calibrations")
 
     parser.add_argument(
         "--sampling-template",
-        default="outputs/sampling_all_{date}/sample_{strategy}_64.csv",
+        default="outputs/sampling/{date}/sample_{strategy}_64.csv",
         help=(
             "Path template. Available placeholders: {date}, {strategy}. "
             "Default matches compare_sampling_all.py outputs."
@@ -87,6 +88,7 @@ def main() -> None:
     print(f"MODELS          : {args.models}")
     print(f"PROFILE         : {args.profile}")
     print(f"SEED            : {args.seed}")
+    print(f"MIN DTE         : {args.min_dte} days")
     print("=" * 84)
 
     failures = []
@@ -128,6 +130,8 @@ def main() -> None:
             args.models,
             "--seed",
             str(args.seed),
+            "--min-dte",
+            str(args.min_dte),
             "--output-root",
             args.output_root,
         ]

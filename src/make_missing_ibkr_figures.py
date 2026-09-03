@@ -20,7 +20,7 @@ Inputs expected from the Team 8 repository:
     data/processed/usd_treasury_history.csv
     data/processed/gld_daily_history.csv
     data/processed/full_surfaces/GLD_<DATE>_eligible_full_surface.csv
-    outputs/sampling_all_<DATE>/sample_CC_64.csv
+    outputs/sampling/<DATE>/sample_CC_64.csv
     outputs/calibrations/CC/<DATE>/
         black_scholes.json
         heston.json
@@ -28,7 +28,7 @@ Inputs expected from the Team 8 repository:
         full_bates_hawkes.json
 
 Example:
-    python src\make_missing_ibkr_figures.py --date 2026-09-02
+    python src/make_missing_ibkr_figures.py --date 2026-09-02
 """
 
 from __future__ import annotations
@@ -271,46 +271,149 @@ def plot_treasury_curve(rates_path: Path, asof: pd.Timestamp, out: Path) -> None
 
 
 def plot_sampling_comparison(full_surface: pd.DataFrame, sample_cc: pd.DataFrame, out: Path) -> None:
+    """Compare the DTE-filtered eligible universe with the fixed CC sample."""
+    vmin = float(full_surface["implied_vol"].min())
+    vmax = float(full_surface["implied_vol"].max())
+
     fig, axes = plt.subplots(1, 2, figsize=(12, 5.2))
 
-    sc0 = axes[0].scatter(full_surface["T"], full_surface["K"], c=full_surface["implied_vol"], s=12)
-    axes[0].set_title("Full eligible surface")
+    sc0 = axes[0].scatter(
+        full_surface["T"],
+        full_surface["K"],
+        c=full_surface["implied_vol"],
+        cmap="cividis",
+        vmin=vmin,
+        vmax=vmax,
+        s=14,
+    )
+    axes[0].set_title("Eligible surface (DTE >= 75 days)")
     axes[0].set_xlabel("Maturity T (years)")
     axes[0].set_ylabel("Strike K")
     axes[0].grid(True, alpha=0.25)
     fig.colorbar(sc0, ax=axes[0], label="Implied volatility")
 
-    axes[1].scatter(full_surface["T"], full_surface["K"], s=10, alpha=0.20, label="Full surface")
-    sc1 = axes[1].scatter(sample_cc["T"], sample_cc["K"], c=sample_cc["implied_vol"], s=55, marker="o", label="CC 64-node sample")
-    axes[1].set_title("Selected CC calibration nodes")
+    axes[1].scatter(
+        full_surface["T"],
+        full_surface["K"],
+        s=10,
+        alpha=0.18,
+        color="0.65",
+        label="Eligible market points",
+    )
+    sc1 = axes[1].scatter(
+        sample_cc["T"],
+        sample_cc["K"],
+        c=sample_cc["implied_vol"],
+        cmap="cividis",
+        vmin=vmin,
+        vmax=vmax,
+        s=58,
+        edgecolors="black",
+        linewidths=0.5,
+        label="CC 64-node sample",
+    )
+    axes[1].set_title("Fixed Chebyshev-Chebyshev calibration nodes")
     axes[1].set_xlabel("Maturity T (years)")
     axes[1].set_ylabel("Strike K")
     axes[1].grid(True, alpha=0.25)
     axes[1].legend(loc="best")
     fig.colorbar(sc1, ax=axes[1], label="Implied volatility")
 
-    fig.suptitle("Full surface and 64-point Chebyshev-Chebyshev calibration sample")
+    fig.suptitle("GLD eligible IV surface and 64-point CC calibration sample")
     fig.tight_layout()
     fig.savefig(out, dpi=220, bbox_inches="tight")
     plt.close(fig)
 
 
 def plot_surface_3d(full_surface: pd.DataFrame, sample_cc: pd.DataFrame, out: Path) -> None:
+    """Plot a stable visual interpolation of the observed IV surface.
+
+    The interpolation is performed in normalized (T, K) coordinates to avoid
+    geometric distortion from the very different numerical scales of maturity
+    and strike. LinearNDInterpolator is used only for visualization and does
+    not extrapolate outside the convex hull. Calibration still uses actual
+    market observations only.
+    """
     from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 
-    x = full_surface["K"].to_numpy(float)
-    y = full_surface["T"].to_numpy(float)
-    z = full_surface["implied_vol"].to_numpy(float)
+    frame = full_surface[["T", "K", "implied_vol"]].dropna().copy()
+    frame = frame.drop_duplicates(["T", "K"], keep="last")
+
+    t = frame["T"].to_numpy(dtype=float)
+    k = frame["K"].to_numpy(dtype=float)
+    iv = frame["implied_vol"].to_numpy(dtype=float)
+
+    t_min, t_max = float(t.min()), float(t.max())
+    k_min, k_max = float(k.min()), float(k.max())
+    t_scale = max(t_max - t_min, 1e-12)
+    k_scale = max(k_max - k_min, 1e-12)
+
+    points_norm = np.column_stack(
+        [
+            (t - t_min) / t_scale,
+            (k - k_min) / k_scale,
+        ]
+    )
+    interp = LinearNDInterpolator(points_norm, iv, fill_value=np.nan)
+
+    # A moderate grid is sufficient for a publication figure and avoids the
+    # blade-like triangles produced by a direct trisurf on the irregular cloud.
+    t_grid = np.linspace(t_min, t_max, 90)
+    k_grid = np.linspace(k_min, k_max, 120)
+    TT, KK = np.meshgrid(t_grid, k_grid, indexing="ij")
+    query_norm = np.column_stack(
+        [
+            ((TT.ravel() - t_min) / t_scale),
+            ((KK.ravel() - k_min) / k_scale),
+        ]
+    )
+    ZZ = np.asarray(interp(query_norm), dtype=float).reshape(TT.shape)
+    ZZ = np.ma.masked_invalid(ZZ)
+
+    finite_iv = np.asarray(ZZ.compressed(), dtype=float)
+    if finite_iv.size == 0:
+        raise RuntimeError("Linear IV interpolation produced no finite grid values.")
+
+    vmin = float(finite_iv.min())
+    vmax = float(finite_iv.max())
 
     fig = plt.figure(figsize=(10.5, 7.2))
     ax = fig.add_subplot(111, projection="3d")
-    surf = ax.plot_trisurf(x, y, z, linewidth=0.2, antialiased=True, alpha=0.85)
-    ax.scatter(sample_cc["K"], sample_cc["T"], sample_cc["implied_vol"], s=28, color="black")
+    surf = ax.plot_surface(
+        KK,
+        TT,
+        ZZ,
+        cmap="cividis",
+        vmin=vmin,
+        vmax=vmax,
+        linewidth=0,
+        antialiased=True,
+        alpha=0.92,
+        rcount=90,
+        ccount=120,
+    )
+    ax.scatter(
+        sample_cc["K"],
+        sample_cc["T"],
+        sample_cc["implied_vol"],
+        s=30,
+        color="black",
+        depthshade=False,
+        label="CC nodes",
+    )
     ax.set_xlabel("Strike K")
     ax.set_ylabel("Maturity T (years)")
     ax.set_zlabel("Implied volatility")
     ax.set_title("GLD implied-volatility surface with selected CC nodes")
-    fig.colorbar(surf, ax=ax, shrink=0.6, pad=0.1, label="Implied volatility")
+    ax.view_init(elev=27, azim=-58)
+    ax.legend(loc="upper right")
+    fig.colorbar(
+        surf,
+        ax=ax,
+        shrink=0.62,
+        pad=0.10,
+        label="Implied volatility",
+    )
     fig.tight_layout()
     fig.savefig(out, dpi=220, bbox_inches="tight")
     plt.close(fig)
@@ -729,6 +832,7 @@ def main():
     parser.add_argument("--n-steps", type=int, default=260)
     parser.add_argument("--n-paths", type=int, default=4096)
     parser.add_argument("--seed", type=int, default=8)
+    parser.add_argument("--min-dte", type=int, default=75)
     parser.add_argument("--out-dir", default="img/diagnostics_ibkr")
     args = parser.parse_args()
 
@@ -742,7 +846,7 @@ def main():
     rates_path = repo / "data" / "processed" / "usd_treasury_history.csv"
     gld_path = repo / "data" / "processed" / "gld_daily_history.csv"
     full_surface_path = repo / "data" / "processed" / "full_surfaces" / f"GLD_{date}_eligible_full_surface.csv"
-    sample_path = repo / "outputs" / f"sampling_all_{date}" / f"sample_{strategy}_64.csv"
+    sample_path = repo / "outputs" / "sampling" / date / f"sample_{strategy}_64.csv"
     calib_dir = repo / "outputs" / "calibrations" / strategy / date
 
     if not rates_path.exists():
@@ -758,6 +862,28 @@ def main():
 
     full_surface = load_surface(full_surface_path)
     sample_cc = load_surface(sample_path)
+
+    if args.min_dte < 1:
+        raise ValueError("--min-dte must be at least 1 day.")
+
+    if "dte" in full_surface.columns:
+        full_dte = pd.to_numeric(full_surface["dte"], errors="coerce")
+    else:
+        full_dte = 365.25 * pd.to_numeric(full_surface["T"], errors="coerce")
+    full_surface = full_surface.loc[full_dte.ge(float(args.min_dte))].copy()
+    full_surface = full_surface.sort_values(["T", "K"]).reset_index(drop=True)
+
+    if "dte" in sample_cc.columns:
+        sample_dte = pd.to_numeric(sample_cc["dte"], errors="coerce")
+    else:
+        sample_dte = 365.25 * pd.to_numeric(sample_cc["T"], errors="coerce")
+    if sample_dte.lt(float(args.min_dte)).any() or sample_dte.isna().any():
+        raise ValueError(
+            f"The selected {strategy} sample contains observations below the "
+            f"official DTE >= {args.min_dte} day domain. Regenerate sampling "
+            "before producing figures."
+        )
+
     model_payloads = read_model_params(calib_dir)
 
     manifest = {
@@ -770,6 +896,7 @@ def main():
         "out_dir": str(out_dir),
         "rate_curve_model": "Nelson-Siegel-Svensson",
         "rate_fit_target": "continuous_rate",
+        "official_min_dte": int(args.min_dte),
     }
 
     # Static / descriptive figures

@@ -19,8 +19,8 @@ Example
 -------
 python src/calibrate_surface.py ^
   --date 2026-09-02 ^
-  --surface outputs/sampling_all_2026-09-02/sample_UU_64.csv ^
-  --strategy UU ^
+  --surface outputs/sampling/2026-09-02/sample_CC_64.csv ^
+  --strategy CC ^
   --profile full ^
   --models bs,heston,bates
 """
@@ -95,7 +95,7 @@ def _json_default(value: Any) -> Any:
     raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
 
 
-def load_selected_surface(path: str | Path) -> tuple[pd.DataFrame, float, dict[str, Any]]:
+def load_selected_surface(path: str | Path, min_dte: int = 75) -> tuple[pd.DataFrame, float, dict[str, Any]]:
     """Load an already-selected calibration surface and validate required data."""
     path = Path(path)
     if not path.exists():
@@ -116,7 +116,19 @@ def load_selected_surface(path: str | Path) -> tuple[pd.DataFrame, float, dict[s
     frame = raw.copy()
 
     numeric = ["K", "T", "rate", "price", "vega"]
-    for optional in ["implied_vol", "moneyness", "spot", "dte"]:
+    for optional in [
+        "implied_vol",
+        "moneyness",
+        "spot",
+        "dte",
+        "nss_beta0",
+        "nss_beta1",
+        "nss_beta2",
+        "nss_beta3",
+        "nss_tau1",
+        "nss_tau2",
+        "nss_rmse_bps",
+    ]:
         if optional in frame.columns:
             numeric.append(optional)
 
@@ -138,6 +150,25 @@ def load_selected_surface(path: str | Path) -> tuple[pd.DataFrame, float, dict[s
         .drop_duplicates(["T", "K"], keep="last")
         .reset_index(drop=True)
     )
+
+    # Official Team 8 calibration-domain restriction.  Do not silently drop
+    # already-selected nodes here: an old sample must be regenerated from the
+    # correctly filtered full surface instead.
+    if int(min_dte) < 1:
+        raise ValueError("min_dte must be at least 1 day.")
+    if "dte" in frame.columns:
+        effective_dte = pd.to_numeric(frame["dte"], errors="coerce")
+    else:
+        effective_dte = 365.25 * pd.to_numeric(frame["T"], errors="coerce")
+    bad_dte = effective_dte.lt(float(min_dte)) | effective_dte.isna()
+    if bad_dte.any():
+        observed_min = float(effective_dte.dropna().min()) if effective_dte.notna().any() else float("nan")
+        raise ValueError(
+            f"Selected surface contains {int(bad_dte.sum())} observation(s) below "
+            f"the official DTE >= {int(min_dte)} day domain "
+            f"(minimum observed DTE={observed_min:.3f}). Regenerate the full "
+            "surface and CC sample before calibrating."
+        )
 
     if len(frame) < 8:
         raise ValueError(
@@ -169,6 +200,31 @@ def load_selected_surface(path: str | Path) -> tuple[pd.DataFrame, float, dict[s
             {x.strftime("%Y-%m-%d") for x in parsed_curve.dropna()}
         )
 
+    rate_curve_models: list[str] = []
+    if "rate_curve_model" in frame.columns:
+        rate_curve_models = sorted(
+            {
+                str(x)
+                for x in frame["rate_curve_model"].dropna().astype(str)
+                if str(x).strip()
+            }
+        )
+
+    nss_fit = {}
+    for col in [
+        "nss_beta0",
+        "nss_beta1",
+        "nss_beta2",
+        "nss_beta3",
+        "nss_tau1",
+        "nss_tau2",
+        "nss_rmse_bps",
+    ]:
+        if col in frame.columns:
+            values = pd.to_numeric(frame[col], errors="coerce").dropna()
+            if not values.empty:
+                nss_fit[col] = float(values.iloc[0])
+
     diagnostics = {
         "rows": int(len(frame)),
         "spot": spot,
@@ -176,9 +232,14 @@ def load_selected_surface(path: str | Path) -> tuple[pd.DataFrame, float, dict[s
         "unique_strikes": int(frame["K"].nunique()),
         "min_T": float(frame["T"].min()),
         "max_T": float(frame["T"].max()),
+        "min_dte": float(effective_dte.min()),
+        "max_dte": float(effective_dte.max()),
+        "official_min_dte": int(min_dte),
         "min_K": float(frame["K"].min()),
         "max_K": float(frame["K"].max()),
         "curve_dates": curve_dates,
+        "rate_curve_models": rate_curve_models,
+        "nss_fit": nss_fit,
     }
 
     if "implied_vol" in frame.columns and frame["implied_vol"].notna().any():
@@ -204,6 +265,15 @@ def calibration_frame(frame: pd.DataFrame) -> pd.DataFrame:
         "dte",
         "spot",
         "curve_date",
+        "rate_curve_model",
+        "nss_fit_target",
+        "nss_beta0",
+        "nss_beta1",
+        "nss_beta2",
+        "nss_beta3",
+        "nss_tau1",
+        "nss_tau2",
+        "nss_rmse_bps",
         "conId",
         "localSymbol",
         "_row_id",
@@ -558,6 +628,13 @@ def main() -> None:
     )
 
     parser.add_argument(
+        "--min-dte",
+        type=int,
+        default=75,
+        help="Official minimum DTE allowed in the selected calibration sample.",
+    )
+
+    parser.add_argument(
         "--output-root",
         default="outputs/calibrations",
     )
@@ -575,7 +652,7 @@ def main() -> None:
     source_path = Path(args.surface)
     requested = parse_models(args.models)
 
-    surface_raw, spot, diagnostics = load_selected_surface(source_path)
+    surface_raw, spot, diagnostics = load_selected_surface(source_path, min_dte=args.min_dte)
     surface = calibration_frame(surface_raw)
 
     output_root = Path(args.output_root)
@@ -593,8 +670,11 @@ def main() -> None:
         "source_surface_sha256": file_sha256(source_path),
         "frozen_calibration_surface": str(frozen_surface_path),
         "n_calibration": int(len(surface)),
+        "official_min_dte": int(args.min_dte),
         "spot": float(spot),
         "curve_dates": diagnostics.get("curve_dates", []),
+        "rate_curve_models": diagnostics.get("rate_curve_models", []),
+        "nss_fit": diagnostics.get("nss_fit", {}),
         "profile": args.profile,
         "seed": int(args.seed),
         "objective": "mean squared price error divided by Vega^2",
@@ -609,6 +689,7 @@ def main() -> None:
     print(f"STRATEGY           : {strategy}")
     print(f"SOURCE             : {source_path}")
     print(f"OBSERVATIONS       : {len(surface)}")
+    print(f"MIN DTE DOMAIN     : {args.min_dte} days")
     print(f"SPOT               : {spot:.6f}")
     print(f"PROFILE            : {args.profile}")
     print(f"SEED               : {args.seed}")

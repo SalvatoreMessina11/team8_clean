@@ -20,8 +20,10 @@ For every date with at least n_t * n_k eligible observations it compares:
     UC = Uniform T + Chebyshev K
     CC = Chebyshev T + Chebyshev K
 
-Primary ranking:
+Diagnostic ranking:
     mean holdout L_inf across usable dates.
+
+The official calibration geometry remains CC and is not selected by this audit.
 """
 
 from __future__ import annotations
@@ -69,7 +71,7 @@ def discover_surfaces(input_dir, start=None, end=None):
     return rows
 
 
-def load_surface(path):
+def load_surface(path, min_dte=75):
     df = pd.read_csv(path)
 
     required = {"T", "K", "implied_vol"}
@@ -83,10 +85,15 @@ def load_surface(path):
         df[col] = pd.to_numeric(df[col], errors="coerce")
 
     df = df.dropna(subset=["T", "K", "implied_vol"]).copy()
+    if "dte" in df.columns:
+        dte = pd.to_numeric(df["dte"], errors="coerce")
+    else:
+        dte = 365.25 * df["T"]
     df = df.loc[
         df["T"].gt(0)
         & df["K"].gt(0)
         & df["implied_vol"].gt(0)
+        & dte.ge(float(min_dte))
     ].copy()
 
     df = (
@@ -239,16 +246,17 @@ def main():
 
     parser.add_argument(
         "--input-dir",
-        default="data/processed/sparse_historical_surfaces",
+        default="data/processed/historical_surfaces",
     )
     parser.add_argument(
         "--output-dir",
-        default="outputs/sampling_audit_all",
+        default="outputs/sampling/historical_audit",
     )
     parser.add_argument("--start", default=None)
     parser.add_argument("--end", default=None)
     parser.add_argument("--n-t", type=int, default=8)
     parser.add_argument("--n-k", type=int, default=8)
+    parser.add_argument("--min-dte", type=int, default=75)
 
     args = parser.parse_args()
     required_n = args.n_t * args.n_k
@@ -273,6 +281,7 @@ def main():
     print("OFFLINE SAMPLING AUDIT")
     print(f"Existing surfaces found: {len(surfaces)}")
     print(f"Required points/date    : {required_n}")
+    print(f"Official minimum DTE   : {args.min_dte} days")
     print("IBKR connection         : NONE")
     print("=" * 90)
 
@@ -286,7 +295,7 @@ def main():
         )
 
         try:
-            full = load_surface(path)
+            full = load_surface(path, min_dte=args.min_dte)
             new_rows, status = evaluate_date(
                 date,
                 full,
@@ -340,7 +349,7 @@ def main():
 
     print()
     print("=" * 110)
-    print("FINAL CROSS-DATE SUMMARY")
+    print("FINAL CROSS-DATE ROBUSTNESS SUMMARY")
     print("=" * 110)
 
     if summary.empty:
@@ -364,11 +373,12 @@ def main():
     winner = summary.iloc[0]
     print("=" * 110)
     print(
-        f"[OK] OVERALL WINNER: {winner['strategy']} | "
+        f"[DIAGNOSTIC] Rank #1: {winner['strategy']} | "
         f"mean holdout L_inf = "
         f"{winner['mean_holdout_linf_bps_iv']:.3f} IV bp | "
         f"dates = {int(winner['dates_used'])}"
     )
+    print("[OFFICIAL] Calibration geometry remains fixed at CC.")
     print(
         f"[OK] summary: "
         f"{out / 'sampling_error_summary.csv'}"

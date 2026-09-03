@@ -37,7 +37,7 @@ Example
 -------
 python src/compare_sampling_all.py ^
   --surface data/processed/full_surfaces/GLD_2026-09-02_eligible_full_surface.csv ^
-  --output-dir outputs/sampling_all_2026-09-02 ^
+  --output-dir outputs/sampling/2026-09-02 ^
   --n-t 8 ^
   --n-k 8 ^
   --lambda-t 1 ^
@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from pathlib import Path
 
 import numpy as np
@@ -454,6 +455,8 @@ def run_comparison(
     lambda_t: float,
     gaussian_z: float,
     output_dir: str | Path,
+    official_min_dte: int = 75,
+    official_strategy: str = "CC",
 ) -> pd.DataFrame:
     required_n = int(n_t) * int(n_k)
 
@@ -563,21 +566,34 @@ def run_comparison(
     )
 
     payload = {
-        "selection_rule": (
+        "purpose": "sampling-distribution robustness diagnostics",
+        "diagnostic_ranking_rule": (
             "minimize holdout infinity norm; "
             "tie-break by holdout RMSE and holdout MAE"
         ),
+        "official_strategy": str(official_strategy).upper(),
+        "official_strategy_rule": (
+            "CC is fixed ex ante for calibration and is not changed by the "
+            "daily diagnostic ranking"
+        ),
+        "official_min_dte": int(official_min_dte),
         "n_T": int(n_t),
         "n_K": int(n_k),
         "lambda_T": float(lambda_t),
         "gaussian_z": float(gaussian_z),
         "strategies": list(strategies.keys()),
-        "winner": comparison.iloc[0].to_dict(),
+        "diagnostic_rank_1": comparison.iloc[0].to_dict(),
         "details": details,
     }
 
+    encoded = json.dumps(payload, indent=2, default=float)
+    (out / "sampling_diagnostics.json").write_text(
+        encoded,
+        encoding="utf-8",
+    )
+    # Backward-compatible filename retained for existing notebooks/scripts.
     (out / "sampling_winner.json").write_text(
-        json.dumps(payload, indent=2, default=float),
+        encoded,
         encoding="utf-8",
     )
 
@@ -665,7 +681,11 @@ def main() -> None:
 
     parser.add_argument(
         "--output-dir",
-        default="outputs/sampling_all",
+        default=None,
+        help=(
+            "Output directory. If omitted, GLD_YYYY-MM-DD input filenames are "
+            "written to outputs/sampling/YYYY-MM-DD."
+        ),
     )
 
     parser.add_argument(
@@ -678,6 +698,17 @@ def main() -> None:
         "--n-k",
         type=int,
         default=8,
+    )
+
+    parser.add_argument(
+        "--min-dte",
+        type=int,
+        default=75,
+        help=(
+            "Official calibration-domain floor in calendar days. "
+            "Observations below this DTE are excluded before node construction. "
+            "Default: 75."
+        ),
     )
 
     parser.add_argument(
@@ -716,7 +747,44 @@ def main() -> None:
 
     strategies = parse_strategies(args.strategies)
 
+    if args.output_dir is None:
+        match = re.search(r"GLD_(\d{4}-\d{2}-\d{2})_", Path(args.surface).name)
+        if match is None:
+            raise ValueError(
+                "Could not infer date from --surface filename. Pass --output-dir "
+                "explicitly, e.g. outputs/sampling/2026-09-02."
+            )
+        output_dir = str(Path("outputs") / "sampling" / match.group(1))
+    else:
+        output_dir = args.output_dir
+
     full = load_surface(args.surface)
+
+    if args.min_dte < 1:
+        raise ValueError("--min-dte must be at least 1 day.")
+
+    if "dte" in full.columns:
+        dte = pd.to_numeric(full["dte"], errors="coerce")
+    else:
+        dte = 365.25 * pd.to_numeric(full["T"], errors="coerce")
+
+    before_dte = len(full)
+    full = full.loc[dte.ge(float(args.min_dte))].copy()
+    full = full.sort_values(["T", "K"]).reset_index(drop=True)
+    full["_row_id"] = np.arange(len(full), dtype=int)
+
+    required_n = int(args.n_t) * int(args.n_k)
+    if len(full) <= required_n:
+        raise ValueError(
+            f"After the DTE >= {args.min_dte} filter only {len(full)} market "
+            f"observations remain; more than {required_n} are required so that "
+            "the holdout set is non-empty."
+        )
+
+    print(
+        f"[DOMAIN] DTE >= {args.min_dte} days: "
+        f"{before_dte} -> {len(full)} eligible observations"
+    )
 
     print_header(
         full,
@@ -733,7 +801,9 @@ def main() -> None:
         n_k=args.n_k,
         lambda_t=args.lambda_t,
         gaussian_z=args.gaussian_z,
-        output_dir=args.output_dir,
+        output_dir=output_dir,
+        official_min_dte=args.min_dte,
+        official_strategy="CC",
     )
 
     display_cols = [
@@ -755,12 +825,14 @@ def main() -> None:
     winner = comparison.iloc[0]
 
     print(
-        f"[OK] Winner: {winner['strategy']} "
+        f"[DIAGNOSTIC] Rank #1: {winner['strategy']} "
         f"(holdout L_inf = "
         f"{winner['holdout_linf_bps_iv']:.3f} IV bp)"
     )
+    print("[OFFICIAL] Calibration strategy remains fixed at CC.")
+    print(f"[OFFICIAL] Minimum DTE domain: {args.min_dte} days.")
 
-    print(f"[OK] Results: {args.output_dir}")
+    print(f"[OK] Results: {output_dir}")
     print()
     print("Legend:")
     print("  UU = Uniform T + Uniform K")
@@ -773,8 +845,8 @@ def main() -> None:
     print("  GC = Gaussian-centered T + Chebyshev K")
     print()
     print(
-        "Primary criterion: holdout L_inf; "
-        "tie-breakers: RMSE, then MAE."
+        "Diagnostic ranking: holdout L_inf; "
+        "tie-breakers: RMSE, then MAE. Official calibration remains CC."
     )
 
 

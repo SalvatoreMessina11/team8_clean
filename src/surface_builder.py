@@ -207,7 +207,7 @@ def build_calibration_surface(
     rates_path=DEFAULT_RATES_PATH,
     min_moneyness=0.90,
     max_moneyness=1.10,
-    min_dte=90,
+    min_dte=75,
     max_dte=320,
     min_price=0.10,
     min_iv=0.03,
@@ -269,7 +269,7 @@ def build_all_historical_surfaces(
     end=None,
     min_moneyness=0.85,
     max_moneyness=1.15,
-    min_dte=21,
+    min_dte=75,
     max_dte=540,
     min_price=0.10,
     min_iv=0.03,
@@ -280,10 +280,10 @@ def build_all_historical_surfaces(
     """
     Rebuild every available historical surface OFFLINE.
 
-    The broad defaults intentionally match the domain of the old daily-60
-    download instead of the much tighter first-calibration filters.  This lets
-    the subsequent sampling audit decide whether a date has enough real points
-    for an 8x8 sample.
+    The historical reconstruction uses the same official maturity floor as
+    the dense calibration exercise: DTE >= 75 days.  This removes very
+    short-dated observations whose implied volatility can be unstable when
+    option Vega is very small.  No synthetic rows are created.
     """
     panel = load_option_panel(options_path)
     rate_history = load_rate_history(rates_path)
@@ -372,7 +372,7 @@ def main():
 
     p.add_argument("--min-moneyness", type=float, default=0.85)
     p.add_argument("--max-moneyness", type=float, default=1.15)
-    p.add_argument("--min-dte", type=int, default=21)
+    p.add_argument("--min-dte", type=int, default=75)
     p.add_argument("--max-dte", type=int, default=540)
     p.add_argument("--min-price", type=float, default=0.10)
     p.add_argument("--min-iv", type=float, default=0.03)

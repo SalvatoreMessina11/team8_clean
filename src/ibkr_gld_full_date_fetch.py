@@ -158,7 +158,7 @@ def main():
     p.add_argument("--output-dir", default="data/processed/full_surfaces")
     p.add_argument("--min-moneyness", type=float, default=0.80)
     p.add_argument("--max-moneyness", type=float, default=1.20)
-    p.add_argument("--min-dte", type=int, default=21)
+    p.add_argument("--min-dte", type=int, default=75)
     p.add_argument("--max-dte", type=int, default=730)
     p.add_argument("--min-price", type=float, default=0.05)
     p.add_argument("--min-iv", type=float, default=0.03)
@@ -204,6 +204,7 @@ def main():
         print("=" * 78)
         print(f"TARGET DATE                   : {target.date()}")
         print(f"GLD SPOT                      : {spot:.4f}")
+        print(f"DTE DOMAIN                    : {args.min_dte} -> {args.max_dte} days")
         print(f"QUERYABLE EXPIRIES            : {len(expiries)}")
         print(f"EXPIRED RELEVANT EXPIRIES LOST: {expired_but_relevant}")
         print(f"STRIKES IN RANGE              : {len(strikes)}")
@@ -319,7 +320,7 @@ def main():
             )
         else:
             print(
-                "[OK] >=64 eligible points: run compare_sampling.py next."
+                "[OK] >=64 eligible points: run compare_sampling_all.py next."
             )
 
     finally:
