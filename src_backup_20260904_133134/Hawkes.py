@@ -158,7 +158,6 @@ class ExactHawkesCalibration:
         S0,
         q=0.0,
         bates_seed=None,
-        hawkes_seed=None,
         maxiter=25,
         popsize=6,
         n_steps=None,
@@ -166,20 +165,7 @@ class ExactHawkesCalibration:
         global_cos_N=128,
         local_cos_N=192,
         min_branching=0.02,
-        warm_local_maxiter=60,
     ):
-        """Calibrate the exact Heston-Hawkes model.
-
-        When ``hawkes_seed`` is supplied, it is interpreted as an 11-parameter
-        result from an EARLIER calibration date.  In that case the expensive
-        differential-evolution stage is skipped and the previous solution is
-        refined locally on the new surface.  A Bates-like local start is still
-        evaluated as a safeguard.  The caller can decide whether to accept the
-        warm result or fall back to the original global search.
-
-        With ``hawkes_seed=None`` this function preserves the original global
-        DE + local SLSQP calibration.
-        """
         surface = OptionSurface.from_frame(df_market)
         if bates_seed is None:
             bates_seed = (
@@ -202,79 +188,10 @@ class ExactHawkesCalibration:
             (-0.5, 0.5),
             (1e-3, 0.6),
         ]
-        full_bounds = [
-            (1e-4, 1.0),
-            (0.1, 10.0),
-            (1e-4, 1.0),
-            (0.01, 8.0),
-            (-0.99, 0.99),
-            *hawkes_bounds,
-        ]
-        constraints = (
-            {"type": "ineq", "fun": lambda x: 2*x[1]*x[2] - x[3]**2},
-        )
 
-        def clip_full_seed(values):
-            x = np.asarray(values, dtype=float).copy()
-            if x.shape != (11,):
-                raise ValueError("hawkes_seed must contain 11 Full Bates-Hawkes parameters")
-            for i, (lo, hi) in enumerate(full_bounds):
-                eps = 1e-8 * max(1.0, abs(lo), abs(hi))
-                x[i] = np.clip(x[i], lo + eps, hi - eps)
-            # Preserve Feller admissibility for the starting point.
-            if cls._feller_gap(x[1], x[2], x[3]) < 0.0:
-                x[3] = min(
-                    x[3],
-                    0.98 * np.sqrt(max(2.0 * x[1] * x[2], 1e-12)),
-                )
-                x[3] = max(x[3], full_bounds[3][0] + 1e-8)
-            return x
-
-        def local_minimize(start, maxiter_local):
-            return minimize(
-                cls.objective_heston,
-                x0=clip_full_seed(start),
-                args=(surface, S0, q, n_steps, local_cos_N),
-                method="SLSQP",
-                bounds=full_bounds,
-                constraints=constraints,
-                options={
-                    "ftol": 1e-8,
-                    "maxiter": int(maxiter_local),
-                    "disp": False,
-                },
-            )
-
-        # Fast path: previous-date Full Bates-Hawkes parameters.
-        if hawkes_seed is not None:
-            warm = clip_full_seed(hawkes_seed)
-            warm_beta = max(float(warm[8]), 0.1)
-            bates_like = np.concatenate([
-                diffusion_seed,
-                [
-                    jump_seed[0],
-                    jump_seed[0] * (1.0 - min_branching),
-                    min_branching,
-                    warm_beta,
-                    jump_seed[1],
-                    jump_seed[2],
-                ],
-            ])
-            candidates = [
-                local_minimize(warm, warm_local_maxiter),
-                local_minimize(bates_like, warm_local_maxiter),
-            ]
-            best = min(candidates, key=lambda result: float(result.fun))
-            best["warm_start_used"] = True
-            best["global_search_used"] = False
-            return best
-
-        # Original robust path: global search over Hawkes block + two local fits.
         def conditional_objective(hawkes_params):
             full = np.concatenate([diffusion_seed, hawkes_params])
-            return cls.objective_heston(
-                full, surface, S0, q, n_steps, global_cos_N
-            )
+            return cls.objective_heston(full, surface, S0, q, n_steps, global_cos_N)
 
         result_global = differential_evolution(
             conditional_objective,
@@ -285,7 +202,14 @@ class ExactHawkesCalibration:
             polish=False,
             seed=seed,
         )
-
+        full_bounds = [
+            (1e-4, 1.0),
+            (0.1, 10.0),
+            (1e-4, 1.0),
+            (0.01, 8.0),
+            (-0.99, 0.99),
+            *hawkes_bounds,
+        ]
         x0 = np.concatenate([diffusion_seed, result_global.x])
         bates_like = np.concatenate([
             diffusion_seed,
@@ -298,12 +222,18 @@ class ExactHawkesCalibration:
                 jump_seed[2],
             ],
         ])
-        candidates = [
-            local_minimize(x0, 80),
-            local_minimize(bates_like, 80),
-        ]
-        best = min(candidates, key=lambda result: float(result.fun))
-        best["warm_start_used"] = False
-        best["global_search_used"] = True
-        return best
-
+        constraints = ({"type": "ineq", "fun": lambda x: 2*x[1]*x[2] - x[3]**2},)
+        candidates = []
+        for start in (x0, bates_like):
+            candidates.append(
+                minimize(
+                    cls.objective_heston,
+                    x0=start,
+                    args=(surface, S0, q, n_steps, local_cos_N),
+                    method="SLSQP",
+                    bounds=full_bounds,
+                    constraints=constraints,
+                    options={"ftol": 1e-8, "maxiter": 80, "disp": False},
+                )
+            )
+        return min(candidates, key=lambda result: float(result.fun))

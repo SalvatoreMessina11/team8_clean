@@ -448,67 +448,6 @@ def bates_seed_from_payload(payload: dict[str, Any]) -> np.ndarray:
     return np.asarray([float(params[name]) for name in names], dtype=float)
 
 
-def hawkes_seed_from_payload(payload: dict[str, Any]) -> np.ndarray:
-    params = payload.get("parameters", {}) or {}
-    names = [
-        "v0",
-        "kappa",
-        "theta",
-        "xi",
-        "rho",
-        "lambda0",
-        "lambda_bar",
-        "branching_ratio",
-        "beta",
-        "mu_J",
-        "sigma_J",
-    ]
-    missing = [name for name in names if name not in params]
-    if missing:
-        raise ValueError(
-            f"Stored Hawkes result missing warm-start parameters: {missing}"
-        )
-    return np.asarray([float(params[name]) for name in names], dtype=float)
-
-
-def find_previous_hawkes_result(
-    output_root: Path,
-    strategy: str,
-    date_slug: str,
-) -> tuple[Path, dict[str, Any]] | tuple[None, None]:
-    """Return the nearest successful EARLIER Hawkes calibration.
-
-    This is deliberately one-sided in time: only dates strictly before the
-    current calibration date are eligible, so the warm start cannot introduce
-    look-ahead into the rolling OOS exercise.
-    """
-    current_date = pd.Timestamp(date_slug).normalize()
-    strategy_dir = Path(output_root) / strategy
-    if not strategy_dir.exists():
-        return None, None
-
-    candidates: list[tuple[pd.Timestamp, Path, dict[str, Any]]] = []
-    for date_dir in strategy_dir.iterdir():
-        if not date_dir.is_dir():
-            continue
-        try:
-            candidate_date = pd.Timestamp(date_dir.name).normalize()
-        except Exception:
-            continue
-        if candidate_date >= current_date:
-            continue
-        path = date_dir / MODEL_FILES["hawkes"]
-        payload = read_result(path)
-        if payload and payload.get("success", False):
-            candidates.append((candidate_date, path, payload))
-
-    if not candidates:
-        return None, None
-
-    _, path, payload = max(candidates, key=lambda item: item[0])
-    return path, payload
-
-
 def parse_models(raw: str) -> list[str]:
     requested = [
         item.strip().lower()
@@ -706,26 +645,6 @@ def main() -> None:
         help="Re-run requested models even when a successful JSON already exists.",
     )
 
-    parser.add_argument(
-        "--no-hawkes-warm-start",
-        action="store_true",
-        help=(
-            "Disable automatic warm start of Full Bates-Hawkes from the nearest "
-            "successful earlier calibration in the same strategy/output root."
-        ),
-    )
-
-    parser.add_argument(
-        "--hawkes-warm-max-bates-ratio",
-        type=float,
-        default=1.05,
-        help=(
-            "Accept a warm-start Hawkes fit only if its objective is at most this "
-            "multiple of the same-date Bates objective; otherwise run the original "
-            "global Hawkes calibration as a quality fallback. Default: 1.05."
-        ),
-    )
-
     args = parser.parse_args()
 
     date_slug = pd.Timestamp(args.date).strftime("%Y-%m-%d")
@@ -760,8 +679,6 @@ def main() -> None:
         "seed": int(args.seed),
         "objective": "mean squared price error divided by Vega^2",
         "requested_models": requested,
-        "hawkes_warm_start_enabled": bool(not args.no_hawkes_warm_start),
-        "hawkes_warm_max_bates_ratio": float(args.hawkes_warm_max_bates_ratio),
         "created_or_updated_at_utc": utc_now_iso(),
     }
     json_write_atomic(date_dir / "manifest.json", manifest)
@@ -838,96 +755,19 @@ def main() -> None:
                     )
 
                 bates_seed = bates_seed_from_payload(bates_payload)
-                bates_objective = float(bates_payload.get("objective", np.inf))
-
-                warm_path = None
-                warm_payload = None
-                warm_seed = None
-                if not args.no_hawkes_warm_start:
-                    warm_path, warm_payload = find_previous_hawkes_result(
-                        output_root, strategy, date_slug
-                    )
-                    if warm_payload is not None:
-                        warm_seed = hawkes_seed_from_payload(warm_payload)
-                        print(
-                            f"[WARM] Full Bates-Hawkes seed from earlier date: "
-                            f"{warm_payload.get('date')} | {warm_path}"
-                        )
-                    else:
-                        print(
-                            "[WARM] No earlier successful Hawkes calibration; "
-                            "using original global search."
-                        )
 
                 hawkes_started = perf_counter()
-                global_fallback_used = False
-
                 raw_result = ExactHawkesCalibration.calibrate_heston(
                     surface,
                     spot,
                     bates_seed=bates_seed,
-                    hawkes_seed=warm_seed,
                     seed=args.seed,
                     min_branching=0.02,
                     **cfg["hawkes"],
                 )
-
-                # Warm starts are accepted only when they remain competitive with
-                # the same-date Bates fit.  Otherwise revert to the original global
-                # Hawkes search, preserving calibration quality and robustness.
-                if warm_seed is not None:
-                    warm_fun = float(raw_result.fun)
-                    threshold = (
-                        float(args.hawkes_warm_max_bates_ratio) * bates_objective
-                        if np.isfinite(bates_objective)
-                        else np.inf
-                    )
-                    warm_ok = bool(raw_result.success) and np.isfinite(warm_fun)
-                    warm_ok = warm_ok and warm_fun <= threshold
-
-                    if not warm_ok:
-                        global_fallback_used = True
-                        print(
-                            f"[WARM FALLBACK] warm objective={warm_fun:.8g}, "
-                            f"Bates threshold={threshold:.8g}; running original "
-                            "global Hawkes search."
-                        )
-                        raw_result = ExactHawkesCalibration.calibrate_heston(
-                            surface,
-                            spot,
-                            bates_seed=bates_seed,
-                            hawkes_seed=None,
-                            seed=args.seed,
-                            min_branching=0.02,
-                            **cfg["hawkes"],
-                        )
-                    else:
-                        print(
-                            f"[WARM OK] objective={warm_fun:.8g} <= "
-                            f"{threshold:.8g}; global search skipped."
-                        )
-
                 result = hawkes_payload(
                     raw_result,
                     perf_counter() - hawkes_started,
-                )
-                result.update(
-                    {
-                        "warm_start_used": bool(warm_seed is not None),
-                        "warm_start_source": str(warm_path) if warm_path else None,
-                        "warm_start_source_date": (
-                            warm_payload.get("date")
-                            if warm_payload is not None
-                            else None
-                        ),
-                        "global_fallback_used": bool(global_fallback_used),
-                        "bates_objective": (
-                            bates_objective if np.isfinite(bates_objective) else None
-                        ),
-                        "warm_accept_ratio": float(
-                            args.hawkes_warm_max_bates_ratio
-                        ),
-                    }
                 )
 
             else:

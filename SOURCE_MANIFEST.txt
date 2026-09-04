@@ -1,0 +1,121 @@
+TEAM 8 SRC SOURCE MANIFEST
+GitHub repo: SalvatoreMessina11/team8_clean
+branch: main
+reference commit: ac6adab5902169f010f9939b1a0442fba93a07b2
+
+Experimental collectors intentionally omitted from clean src:
+  ibkr_gld_backward_reuse_test.py
+  ibkr_gld_conid_backward.py
+  ibkr_gld_full_exhaustive.py
+
+Files:
+Bates.py
+  bytes=5786
+  git_blob=ff41ccc07da40c404d62bf9832d327147225247c
+  sha256=a9cb926366f71ca817a6465f7776052a2014d4ec29b600a9296cdb578fc7f1a5
+  status=EXACT GitHub main blob match
+BatesHawkesExact.py
+  bytes=7466
+  git_blob=771f3dbfcf50fcea6adaaa58e125825c6cda4d4f
+  sha256=d62b986c4827e0ef82970bb02185c7bdc8866d81ed7ee48c4426bc9d409e4e64
+  status=EXACT GitHub main blob match
+BnS.py
+  bytes=2419
+  git_blob=78dc46d81667378779413c46a628c3d865d73c03
+  sha256=9b27e73408bb833cb33b151519bd4ba54ed69e76d5f0d4b5511c3dfcf7c51db7
+  status=EXACT GitHub main blob match
+Hawkes.py
+  bytes=7682
+  git_blob=3d4cbb7566b3bd29657df84fb908eb3562c0dad0
+  sha256=ac0030bc18a6f275b771bb35857d4bfbd7e02b91e9c288a76aa534af5a76e7be
+  status=EXACT GitHub main blob match
+Heston.py
+  bytes=5325
+  git_blob=09d00b1ed2693e58e78544f3d573c26f77e00621
+  sha256=90b1b973e6546592e05972dd42239e7dd3ae74deece6e44ca6f18536721e4340
+  status=EXACT GitHub main blob match
+Sampling.py
+  bytes=6510
+  git_blob=1fd14f405a79e63568be51e3df08f735979c90d7
+  sha256=a81faad14e0d0d28e62ef1482eb277fc1daf9dedd4991d9ae20b27a95e62dbfb
+  status=EXACT GitHub main blob match
+audit_market_data.py
+  bytes=13993
+  git_blob=cbc1ece62d3e2aa2e41a4e7fbcb892fb8079e000
+  sha256=cc0dbdacaf0ea0710452e331bead7e33a201458b6fda2c0a153063b2d507c5bb
+  status=PATCHED from GitHub blob 6f1cde0a2d66cdc1c0a4de0a478299e55841de1e
+batch_calibrate.py
+  bytes=4308
+  git_blob=76af71bc918fdcf56ecf9767ae07d752ca1e3118
+  sha256=74fa06bccae7244126e57d04e46e14dd8a9c222dc898691d4b19fd24326145cd
+  status=EXACT GitHub main blob match
+batch_sampling_offline.py
+  bytes=10305
+  git_blob=cc5101e4b73331fe1b52053f170f22a7757fb6a1
+  sha256=705f8a1c1e27c5fe7bba286f6d019a59524915f1d243ab6d224df22728847907
+  status=EXACT GitHub main blob match
+calibrate_one_day.py
+  bytes=8760
+  git_blob=462c905b30e8e583afc0d0302135a6abd8ba105d
+  sha256=2a67eb16b9a9e57ff0380e446d326ffb3233dcf6dd0fd3deca923d6f35a10189
+  status=EXACT GitHub main blob match
+calibrate_surface.py
+  bytes=24548
+  git_blob=eb5c04deac3a1564359c21ca38eed13bd507a76a
+  sha256=0b12a6f279a984db038fd293103daa3933107b7141389bbb04202389deaaaf44
+  status=EXACT GitHub main blob match
+calibration_core.py
+  bytes=6000
+  git_blob=c819910136ec37726e1fd16529540b16bd8a85e3
+  sha256=4ad0a8364f8319d831ebd13a5e127d8dab59ba53e8c205e1fa2c82ad8a51d54e
+  status=EXACT GitHub main blob match
+compare_sampling_all.py
+  bytes=22873
+  git_blob=efe7c5356ac608eb0bcbc3a8f81152ac36b35f71
+  sha256=6d17b8a5ce49ee578857396229247f7eb95c079f6f121acfcf62df702f72da1b
+  status=EXACT GitHub main blob match
+fourier_pricing.py
+  bytes=4233
+  git_blob=2dd3e462bd657e462c0211327e9f4a5ba2d54dce
+  sha256=77ec16ff53c7b024f3e50edae8521b58a96b7f3e42e352406bacb6b909adbaab
+  status=EXACT GitHub main blob match
+ibkr_gld_historical_surface.py
+  bytes=40715
+  git_blob=161fcffb1539693290a35d9d2b40b3cb238f99db
+  sha256=abae806f5e0135fc0f848cef898ef0959c523d2ce7f7f5797ca07b9f4c971f7b
+  status=EXACT GitHub main blob match
+ibkr_gld_today_surface.py
+  bytes=12486
+  git_blob=7554b8249571456605df61d086e4c8db28a99929
+  sha256=c87ba35f60713bb298b9c54dea522f8ad0c17482a9ec6b247a0b77dd907fa733
+  status=EXACT GitHub main blob match
+make_missing_ibkr_figures.py
+  bytes=70131
+  git_blob=560ed1185559b5d2330dd6ab69dd070f4523b225
+  sha256=73c6a85cf948db0f9e4430a7fa0c6ebe71c8235fe62d2a841f1cc66d045d59cf
+  status=EXACT GitHub main blob match
+model_smoke_test.py
+  bytes=1731
+  git_blob=c30bc1553876a78119035c4851d644ded7e701d0
+  sha256=46b7efe88cb6c14eb5b579cddccc319c5a19434bc46156d80282addf338d108e
+  status=EXACT GitHub main blob match
+oos_validation.py
+  bytes=52429
+  git_blob=5fad48288e3b6203add127271cbd67416aceb163
+  sha256=3f6d2b1aba0a74779643dd67a50931629d8a32f5d8898c0727181be3a3a0d4e0
+  status=PATCHED from GitHub blob e7f4c48371ea16d1607349486e300dd5afca683c
+rates.py
+  bytes=13433
+  git_blob=47b269bbb8a6b4cd7d3d40fa04f43a59080f3dbb
+  sha256=2c69409cd5d5438d2a3979c37f770228c5cc22dcf397a1ede741fc86b486d229
+  status=EXACT GitHub main blob match
+rebuild_full_surface_nss.py
+  bytes=10247
+  git_blob=a7107c5dc7e11d2bd20a48abd3345e1d8d816654
+  sha256=639ba91b47aa0620da64bf023587f2dff046a5499a39b94366b863f930336a2f
+  status=EXACT GitHub main blob match
+surface_builder.py
+  bytes=13615
+  git_blob=b33f34af3826ee83c30d85e4f80e705d439e0dba
+  sha256=664cde4c38e53a4597b2990e4ecdc227c8da2067b2668c45e16532b7d95a2ff6
+  status=EXACT GitHub main blob match
