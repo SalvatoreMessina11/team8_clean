@@ -1,4 +1,4 @@
-"""Rolling historical / OOS validation for the Team 8 GLD project.
+﻿"""Rolling historical / OOS validation for the Team 8 GLD project.
 
 This file is intentionally ready BEFORE the historical panel is complete.
 Once the missing IBKR historical data have been reconstructed, it can run the
@@ -556,9 +556,9 @@ def model_prices(
             try:
                 out[i] = BnS.bs_call_price(
                     spot,
-                    float(row.K),
-                    float(row.T),
-                    float(row.rate),
+                    float(row["K"]),
+                    float(row["T"]),
+                    float(row["rate"]),
                     sigma,
                     0.0,
                 )
@@ -661,9 +661,9 @@ def prices_to_iv(
         iv[i] = BnS.implied_vol_call(
             price,
             spot,
-            float(row.K),
-            float(row.T),
-            float(row.rate),
+            float(row["K"]),
+            float(row["T"]),
+            float(row["rate"]),
             q=0.0,
         )
 
@@ -1777,3 +1777,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
