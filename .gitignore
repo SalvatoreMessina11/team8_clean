@@ -5,10 +5,23 @@ __pycache__/
 .ipynb_checkpoints/
 .DS_Store
 
-# Generated data
+# Generated data: ignore by default
 data/processed/*
+
+# Keep folder placeholder
 !data/processed/.gitkeep
 
-# Generated results
+# Keep market surfaces needed for calibration / OOS
+!data/processed/full_surfaces/
+!data/processed/full_surfaces/**
+
+!data/processed/sparse_historical_surfaces/
+!data/processed/sparse_historical_surfaces/**
+
+# Keep the underlying and Treasury histories used by the project
+!data/processed/gld_daily_history.csv
+!data/processed/usd_treasury_history.csv
+
+# Generated results remain local
 outputs/*
 !outputs/.gitkeep
